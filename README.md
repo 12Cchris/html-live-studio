@@ -23,12 +23,12 @@
 ## 📥 다운로드 및 실행
 
 ### 방법 1. 무설치 단일 실행 파일 (`.exe`) - 추천
-[**GitHub Releases**](https://github.com) 탭에서 `HTML Live Studio.exe`를 다운로드하여 더블 클릭하면 파이썬 설치 없이 바로 실행됩니다.
+[**GitHub Releases**](https://github.com/12Cchris/html-live-studio/releases) 탭에서 `HTML Live Studio.exe`를 다운로드하여 더블 클릭하면 파이썬 설치 없이 바로 실행됩니다.
 
 ### 방법 2. 소스 코드로 직접 실행 (Python)
 ```bash
 # 1. 저장소 클론
-git clone https://github.com/사용자이름/html-live-studio.git
+git clone https://github.com/12Cchris/html-live-studio.git
 cd html-live-studio
 
 # 2. 필수 패키지 설치
@@ -37,8 +37,6 @@ pip install -r requirements.txt
 # 3. 프로그램 실행
 python main.py
 ```
-
-또는 폴더 내의 `run.bat` 파일을 더블 클릭하여 실행할 수 있습니다.
 
 ---
 
@@ -57,4 +55,4 @@ python main.py
 ---
 
 ## 📄 라이선스
-MIT License
+GNU General Public License v3.0 — 자세한 내용은 [LICENSE](./LICENSE) 파일을 참고하세요.
