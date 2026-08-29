@@ -137,7 +137,12 @@
 
       <!-- Optimized Single Monaco Editor Instance Container -->
       <div class="editor-body">
-        <div id="monaco-container" class="monaco-instance"></div>
+        <div id="monaco-container" class="monaco-instance">
+          <div class="editor-loading" id="editor-loading">
+            <i class="fa-solid fa-circle-notch fa-spin"></i>
+            <span>에디터 엔진 불러오는 중...</span>
+          </div>
+        </div>
       </div>
 
       <!-- Bottom Console Panel (collapsible) -->

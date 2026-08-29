@@ -2,11 +2,11 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.spec
 
 # Build & Dist
 build/
 dist/
+dist_installer/
 
 # Virtual Environment
 venv/

@@ -573,14 +573,14 @@ const TEMPLATES = {
 
 // Application State
 const state = {
-  mode: 'single', // 'single' or 'tabs'
-  currentTab: 'html', // 'html', 'css', 'js'
+  mode: 'single', // 'single' | 'tabs'
+  currentTab: 'html', // 'html' | 'css' | 'js'
   currentFilepath: null,
   currentFilename: '새 파일.html',
   isDirty: false,
   autoRefresh: true,
-  theme: 'dark', // 'dark' or 'light'
-  viewport: 'desktop', // 'desktop', 'tablet', 'mobile'
+  theme: 'dark', // 'dark' | 'light'
+  viewport: 'desktop', // 'desktop' | 'tablet' | 'mobile'
   fontSize: 14,
   editor: null, // Single optimized Monaco Editor instance
   models: {
@@ -643,12 +643,14 @@ const elements = {
 };
 
 // Show Toast Notification
+let toastTimer = null;
 function showToast(message, type = 'info') {
+  if (toastTimer) clearTimeout(toastTimer);
   elements.toast.textContent = message;
   elements.toast.className = 'toast show ' + type;
-  setTimeout(() => {
+  toastTimer = setTimeout(() => {
     elements.toast.className = 'toast';
-  }, 2500);
+  }, 2200);
 }
 
 // Update Status Bar
@@ -733,24 +735,22 @@ function saveToLocalStorage() {
     };
     localStorage.setItem('html_live_studio_state', JSON.stringify(data));
   } catch (e) {
-    // Ignore storage quota errors
+    // Ignore quota errors
   }
 }
 
 function restoreFromLocalStorage() {
   try {
     const raw = localStorage.getItem('html_live_studio_state');
-    if (raw) {
-      return JSON.parse(raw);
-    }
+    if (raw) return JSON.parse(raw);
   } catch (e) {}
   return null;
 }
 
-// Optimized Monaco Editor Initialization (Single Instance with Model Switching)
+// Initialize Monaco Editor with Zero-Lag Single Instance Architecture
 function initMonaco() {
   if (typeof require === 'undefined') {
-    setTimeout(initMonaco, 300);
+    setTimeout(initMonaco, 200);
     return;
   }
 
@@ -760,22 +760,33 @@ function initMonaco() {
     const saved = restoreFromLocalStorage();
     const initialCode = (saved && saved.code) ? saved.code : TEMPLATES.basic;
 
-    if (saved && saved.fontSize) {
-      state.fontSize = saved.fontSize;
-      elements.fontSizeLabel.textContent = `${state.fontSize}px`;
-    }
-    if (saved && saved.filename) {
-      state.currentFilename = saved.filename;
-      elements.currentFilename.textContent = saved.filename;
+    if (saved) {
+      if (saved.fontSize) {
+        state.fontSize = saved.fontSize;
+        elements.fontSizeLabel.textContent = `${state.fontSize}px`;
+      }
+      if (saved.filename) {
+        state.currentFilename = saved.filename;
+        elements.currentFilename.textContent = saved.filename;
+      }
+      if (saved.theme) {
+        state.theme = saved.theme;
+        document.body.className = `theme-${state.theme}`;
+        elements.btnTheme.innerHTML = state.theme === 'dark' ? '<i class="fa-solid fa-moon"></i>' : '<i class="fa-solid fa-sun"></i>';
+      }
     }
 
     const parsed = parseHtmlToComponents(initialCode);
 
-    // Create Models for zero-overhead switching
+    // Create Models for instant zero-overhead switching
     state.models.single = monaco.editor.createModel(initialCode, 'html');
     state.models.html = monaco.editor.createModel(parsed.html, 'html');
     state.models.css = monaco.editor.createModel(parsed.css, 'css');
     state.models.js = monaco.editor.createModel(parsed.js, 'javascript');
+
+    // Remove Loading Spinner
+    const loadingEl = document.getElementById('editor-loading');
+    if (loadingEl) loadingEl.remove();
 
     // Create single Monaco Editor instance
     state.editor = monaco.editor.create(document.getElementById('monaco-container'), {
@@ -792,7 +803,28 @@ function initMonaco() {
       cursorSmoothCaretAnimation: 'on',
       formatOnPaste: true,
       renderWhitespace: 'selection',
-      smoothScrolling: true
+      smoothScrolling: true,
+      quickSuggestions: true,
+      wordBasedSuggestions: "matchingDocuments",
+      snippetSuggestions: "top"
+    });
+
+    // Monaco Shortcut Bindings (ensure Ctrl+S, Ctrl+O, Ctrl+Enter work even when editor is focused)
+    state.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      handleSaveFile(false);
+    });
+    state.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyS, () => {
+      handleSaveFile(true);
+    });
+    state.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyO, () => {
+      handleOpenFile();
+    });
+    state.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyN, () => {
+      handleNewFile();
+    });
+    state.editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
+      triggerRender();
+      showToast('미리보기를 새로고침했습니다.');
     });
 
     // Content Change Listeners on all models
@@ -808,7 +840,7 @@ function initMonaco() {
     // Initial Trigger Render
     triggerRender();
     updateStats();
-    setStatus('최적화된 에디터 준비 완료');
+    setStatus('에디터 엔진 준비 완료');
   });
 }
 
@@ -840,7 +872,7 @@ function setFullCode(code) {
   saveToLocalStorage();
 }
 
-// On Code Change Event (Adaptive Debounce)
+// On Code Change Event (Adaptive Smart Debounce)
 function onCodeChange() {
   state.isDirty = true;
   elements.dirtyIndicator.style.display = 'inline';
@@ -850,15 +882,21 @@ function onCodeChange() {
   if (state.autoRefresh) {
     if (state.debounceTimer) clearTimeout(state.debounceTimer);
     
-    // 문서 크기에 따른 적응형 스마트 디바운스 (150ms ~ 350ms)
+    // 문서 크기에 따른 적응형 스마트 디바운스 (120ms ~ 300ms)
     const codeLen = getFullCode().length;
-    const delay = Math.min(350, Math.max(150, Math.floor(codeLen / 500)));
+    const delay = Math.min(300, Math.max(120, Math.floor(codeLen / 600)));
 
     state.debounceTimer = setTimeout(triggerRender, delay);
   }
 }
 
-// Infinite Loop Protection & Console Interceptor Script
+// Infinite Loop Protection Injector
+function injectLoopGuards(code) {
+  return code.replace(/(\b(?:for|while)\s*\([^)]*\)\s*\{)/g, '$1 window.__checkLoop && window.__checkLoop();')
+             .replace(/(\bdo\s*\{)/g, '$1 window.__checkLoop && window.__checkLoop();');
+}
+
+// Sandbox Header: Infinite Loop Guard & Console Interceptor Script
 const sandboxScript = `
 <script>
   (function() {
@@ -867,8 +905,8 @@ const sandboxScript = `
     var __loopCounter = 0;
     window.__checkLoop = function() {
       __loopCounter++;
-      if (__loopCounter > 5000) {
-        if (Date.now() - __loopStartTime > 1500) {
+      if (__loopCounter > 4000) {
+        if (Date.now() - __loopStartTime > 1200) {
           window.parent.postMessage({ type: 'CONSOLE_LOG', level: 'error', message: '⚠️ 무한 루프 감지: 코드 실행이 안전하게 차단되었습니다.', time: new Date().toLocaleTimeString() }, '*');
           throw new Error('Infinite loop detected and aborted');
         }
@@ -901,12 +939,15 @@ const sandboxScript = `
 <\/script>
 `;
 
-// Trigger Live Preview Rendering
+// Trigger Live Preview Rendering with Scroll Preservation
 function triggerRender() {
   state.renderCount++;
-  const code = getFullCode();
+  const rawCode = getFullCode();
   
-  let injectedCode = code;
+  // Apply Loop Guards to scripts
+  const codeWithGuards = injectLoopGuards(rawCode);
+
+  let injectedCode = codeWithGuards;
   if (injectedCode.includes('<head>')) {
     injectedCode = injectedCode.replace('<head>', '<head>' + sandboxScript);
   } else if (injectedCode.includes('<html>')) {
@@ -915,9 +956,29 @@ function triggerRender() {
     injectedCode = sandboxScript + injectedCode;
   }
 
-  // Smooth DOM srcdoc update without flicker
+  // Preserve previous scroll position
+  let scrollX = 0;
+  let scrollY = 0;
+  try {
+    if (elements.previewFrame.contentWindow) {
+      scrollX = elements.previewFrame.contentWindow.scrollX || 0;
+      scrollY = elements.previewFrame.contentWindow.scrollY || 0;
+    }
+  } catch (e) {}
+
+  // Update srcdoc
   elements.previewFrame.srcdoc = injectedCode;
-  setStatus('실시간 미리보기 렌더링됨');
+
+  // Restore scroll after load
+  elements.previewFrame.onload = function() {
+    try {
+      if (elements.previewFrame.contentWindow && (scrollX > 0 || scrollY > 0)) {
+        elements.previewFrame.contentWindow.scrollTo(scrollX, scrollY);
+      }
+    } catch (e) {}
+  };
+
+  setStatus('미리보기 실시간 동기화됨');
 }
 
 // Receive Console Logs from Preview Frame
@@ -930,6 +991,14 @@ window.addEventListener('message', function(event) {
 function addConsoleEntry(level, message, time) {
   const placeholder = elements.consoleOutput.querySelector('.console-placeholder');
   if (placeholder) placeholder.remove();
+
+  // Cap console entries to 250 to prevent memory bloating
+  if (state.consoleEntries.length >= 250) {
+    state.consoleEntries.shift();
+    if (elements.consoleOutput.firstElementChild) {
+      elements.consoleOutput.firstElementChild.remove();
+    }
+  }
 
   const entry = document.createElement('div');
   entry.className = `console-entry ${level}`;
@@ -1159,7 +1228,9 @@ async function handleNewFile() {
   elements.statusPath.textContent = '새 파일 (저장되지 않음)';
   
   if (window.pywebview && window.pywebview.api) {
-    await window.pywebview.api.reset_filepath();
+    try {
+      await window.pywebview.api.reset_filepath();
+    } catch (e) {}
   }
   showToast('새 문서를 생성했습니다.');
 }
@@ -1248,7 +1319,7 @@ elements.btnSaveAs.addEventListener('click', () => handleSaveFile(true));
 let isDragging = false;
 let rafId = null;
 
-elements.splitter.addEventListener('mousedown', (e) => {
+elements.splitter.addEventListener('mousedown', () => {
   isDragging = true;
   elements.splitter.classList.add('dragging');
   document.body.style.cursor = 'col-resize';
@@ -1277,7 +1348,7 @@ window.addEventListener('mouseup', () => {
   }
 });
 
-// Keyboard Shortcuts
+// Global Keyboard Shortcuts
 window.addEventListener('keydown', (e) => {
   // Ctrl + S : Save
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') {

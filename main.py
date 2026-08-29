@@ -1,7 +1,9 @@
 import os
 import sys
-import json
 import webview
+
+# PyWebView 글로벌 설정 최적화
+webview.settings['ALLOW_DOWNLOADS'] = True
 
 class EditorAPI:
     def __init__(self):
@@ -12,8 +14,8 @@ class EditorAPI:
         self._window = window
 
     def _read_file_with_encodings(self, filepath):
-        """다양한 문자 인코딩을 안전하게 자동 감지하여 파일을 읽습니다."""
-        encodings = ['utf-8-sig', 'utf-8', 'cp949', 'euc-kr', 'latin-1']
+        """다양한 문자 인코딩을 안전하게 감지하여 파일을 읽습니다."""
+        encodings = ('utf-8-sig', 'utf-8', 'cp949', 'euc-kr', 'latin-1')
         last_err = None
         for enc in encodings:
             try:
@@ -21,7 +23,6 @@ class EditorAPI:
                     return f.read(), enc
             except UnicodeDecodeError as e:
                 last_err = e
-                continue
             except Exception as e:
                 raise e
         raise last_err or Exception("지원되지 않는 파일 인코딩입니다.")
@@ -122,7 +123,6 @@ def get_resource_path(relative_path):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path)
 
-
 def main():
     api = EditorAPI()
     index_html = get_resource_path(os.path.join('gui', 'index.html'))
@@ -138,7 +138,7 @@ def main():
     )
     api.set_window(window)
 
-    # Edge WebView2 엔진 최적화 옵션으로 실행
+    # Edge WebView2 엔진 최적화 실행
     webview.start(debug=False)
 
 if __name__ == '__main__':
