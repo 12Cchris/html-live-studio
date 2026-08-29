@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTML Live Studio</title>
+  <link rel="icon" type="image/png" href="app_icon.png">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="theme-dark">
+  <!-- Top Navigation Bar -->
+  <header class="top-nav">
+    <div class="nav-left">
+      <div class="brand">
+        <img src="app_icon.png" alt="Logo" class="brand-logo">
+        <span class="brand-name">HTML Live Studio</span>
+      </div>
+
+      <div class="btn-group file-actions">
+        <button id="btn-new" class="btn btn-icon" title="새 파일 (Ctrl+N)">
+          <i class="fa-regular fa-file"></i> <span>새 파일</span>
+        </button>
+        <button id="btn-open" class="btn btn-icon" title="파일 열기 (Ctrl+O)">
+          <i class="fa-regular fa-folder-open"></i> <span>열기</span>
+        </button>
+        <button id="btn-save" class="btn btn-icon btn-primary" title="저장 (Ctrl+S)">
+          <i class="fa-regular fa-floppy-disk"></i> <span>저장</span>
+        </button>
+        <button id="btn-save-as" class="btn btn-icon" title="다른 이름으로 저장 (Ctrl+Shift+S)">
+          <i class="fa-solid fa-file-export"></i> <span class="btn-text-hide-sm">다른 이름으로</span>
+        </button>
+      </div>
+
+      <div class="template-selector">
+        <label for="template-select"><i class="fa-solid fa-wand-magic-sparkles"></i> 템플릿:</label>
+        <select id="template-select">
+          <option value="basic">기본 HTML5 웹페이지</option>
+          <option value="card">모던 글래스모피즘 카드</option>
+          <option value="particles">인터랙티브 파티클 캔버스</option>
+          <option value="todo">반응형 Todo 앱</option>
+          <option value="cube3d">3D 인터랙티브 큐브</option>
+          <option value="blank">빈 페이지 (Blank)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="nav-right">
+      <!-- Mode Toggle: Single HTML vs Tabbed (HTML/CSS/JS) -->
+      <div class="mode-toggle">
+        <button id="mode-single" class="btn-toggle active" title="단일 전체 HTML 편집 모드">단일 HTML</button>
+        <button id="mode-tabs" class="btn-toggle" title="HTML / CSS / JS 분리 탭 모드">탭 분리 (HTML/CSS/JS)</button>
+      </div>
+
+      <!-- Viewport presets -->
+      <div class="viewport-presets">
+        <button id="vp-desktop" class="btn-icon-square active" title="데스크톱 뷰포트 (100%)">
+          <i class="fa-solid fa-desktop"></i>
+        </button>
+        <button id="vp-tablet" class="btn-icon-square" title="태블릿 뷰포트 (768px)">
+          <i class="fa-solid fa-tablet-screen-button"></i>
+        </button>
+        <button id="vp-mobile" class="btn-icon-square" title="모바일 뷰포트 (375px)">
+          <i class="fa-solid fa-mobile-screen-button"></i>
+        </button>
+      </div>
+
+      <!-- Font Zoom Controls -->
+      <div class="font-controls">
+        <button id="btn-zoom-out" class="btn-icon-square" title="글자 축소 (Ctrl + -)">
+          <i class="fa-solid fa-minus"></i>
+        </button>
+        <span id="font-size-label" class="font-size-label">14px</span>
+        <button id="btn-zoom-in" class="btn-icon-square" title="글자 확대 (Ctrl + +)">
+          <i class="fa-solid fa-plus"></i>
+        </button>
+      </div>
+
+      <div class="quick-tools">
+        <button id="btn-refresh" class="btn-icon-square" title="미리보기 새로고침 (Ctrl+Enter)">
+          <i class="fa-solid fa-rotate-right"></i>
+        </button>
+        <button id="btn-theme" class="btn-icon-square" title="다크/라이트 테마 전환">
+          <i class="fa-solid fa-moon"></i>
+        </button>
+        <button id="btn-download" class="btn btn-icon btn-accent" title="HTML 파일로 다운로드/내보내기">
+          <i class="fa-solid fa-download"></i> <span>내보내기</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace Area -->
+  <main class="workspace-container" id="workspace-container">
+    <!-- Drag and Drop Overlay Indicator -->
+    <div id="drop-overlay" class="drop-overlay">
+      <div class="drop-modal">
+        <i class="fa-solid fa-cloud-arrow-up drop-icon"></i>
+        <h3>HTML 파일을 여기에 놓아주세요</h3>
+        <p>코드를 에디터로 즉시 불러옵니다</p>
+      </div>
+    </div>
+
+    <!-- Left: Code Editor Section -->
+    <section class="editor-pane" id="editor-pane">
+      <!-- Editor Tab Header (visible when tab mode is active) -->
+      <div class="editor-tabs-bar" id="editor-tabs-bar" style="display: none;">
+        <button class="tab-btn active" data-tab="html">
+          <i class="fa-brands fa-html5 text-orange"></i> HTML
+        </button>
+        <button class="tab-btn" data-tab="css">
+          <i class="fa-brands fa-css3-alt text-blue"></i> CSS
+        </button>
+        <button class="tab-btn" data-tab="js">
+          <i class="fa-brands fa-square-js text-yellow"></i> JavaScript
+        </button>
+        <div class="tab-spacer"></div>
+        <button id="btn-format" class="btn-small" title="코드 자동 정렬 (Alt+Shift+F)">
+          <i class="fa-solid fa-align-left"></i> 자동 정렬
+        </button>
+      </div>
+
+      <!-- Single File Header -->
+      <div class="editor-header" id="single-editor-header">
+        <div class="file-info">
+          <i class="fa-brands fa-html5 text-orange"></i>
+          <span id="current-filename">새 파일.html</span>
+          <span id="dirty-indicator" class="dirty-dot" style="display:none;" title="수정됨 (저장되지 않음)">*</span>
+        </div>
+        <div class="editor-header-actions">
+          <button id="btn-format-single" class="btn-small" title="코드 자동 정렬 (Alt+Shift+F)">
+            <i class="fa-solid fa-align-left"></i> 정렬
+          </button>
+          <span class="badge" id="char-line-count">Ln 1, Col 1</span>
+        </div>
+      </div>
+
+      <!-- Optimized Single Monaco Editor Instance Container -->
+      <div class="editor-body">
+        <div id="monaco-container" class="monaco-instance"></div>
+      </div>
+
+      <!-- Bottom Console Panel (collapsible) -->
+      <div class="console-panel" id="console-panel">
+        <div class="console-header">
+          <div class="console-title">
+            <i class="fa-solid fa-terminal"></i>
+            <span>콘솔 로그 (<span id="console-count">0</span>)</span>
+          </div>
+          <div class="console-controls">
+            <button id="btn-clear-console" class="btn-mini" title="콘솔 지우기">
+              <i class="fa-solid fa-trash-can"></i>
+            </button>
+            <button id="btn-toggle-console" class="btn-mini" title="콘솔 열기/접기">
+              <i class="fa-solid fa-chevron-down" id="console-toggle-icon"></i>
+            </button>
+          </div>
+        </div>
+        <div class="console-output" id="console-output">
+          <div class="console-placeholder">출력된 콘솔 로그가 없습니다.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Center Drag Handle (Splitter) -->
+    <div class="splitter" id="splitter" title="드래그하여 크기 조절"></div>
+
+    <!-- Right: Live Preview Section -->
+    <section class="preview-pane" id="preview-pane">
+      <div class="preview-header">
+        <div class="preview-meta">
+          <span class="live-badge"><span class="pulse-dot"></span> LIVE PREVIEW</span>
+          <span class="viewport-dimension" id="viewport-dimension">100%</span>
+        </div>
+        <div class="preview-actions">
+          <label class="auto-refresh-toggle">
+            <input type="checkbox" id="auto-refresh-check" checked>
+            <span>실시간 자동 갱신</span>
+          </label>
+          <button id="btn-popout" class="btn-mini" title="새 브라우저 창에서 미리보기 열기">
+            <i class="fa-solid fa-arrow-up-right-from-square"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Preview Iframe Stage -->
+      <div class="preview-stage" id="preview-stage">
+        <div class="preview-wrapper" id="preview-wrapper">
+          <iframe id="preview-frame" sandbox="allow-scripts allow-modals allow-same-origin allow-popups allow-forms" title="HTML 실시간 미리보기"></iframe>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Status Bar Footer -->
+  <footer class="status-bar">
+    <div class="status-left">
+      <span id="status-message"><i class="fa-solid fa-circle-check text-green"></i> 준비 완료</span>
+      <span class="divider">|</span>
+      <span id="status-path">새 파일 (저장되지 않음)</span>
+    </div>
+    <div class="status-right">
+      <span id="status-stats">0 줄, 0 단어, 0 자</span>
+      <span class="divider">|</span>
+      <span id="status-mode">모드: 단일 HTML</span>
+      <span class="divider">|</span>
+      <span>UTF-8</span>
+    </div>
+  </footer>
+
+  <!-- Notification Toast -->
+  <div id="toast" class="toast"></div>
+
+  <!-- Monaco Editor Loader -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
