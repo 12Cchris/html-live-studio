@@ -83,6 +83,10 @@
         <button id="btn-theme" class="btn-icon-square" title="다크/라이트 테마 전환">
           <i class="fa-solid fa-moon"></i>
         </button>
+        <button id="btn-update" class="btn-icon-square" title="소프트웨어 업데이트 확인 (v1.1.0)" style="position: relative;">
+          <i class="fa-solid fa-cloud-arrow-down"></i>
+          <span id="update-badge" class="update-pulse-dot" style="display: none;"></span>
+        </button>
         <button id="btn-download" class="btn btn-icon btn-accent" title="HTML 파일로 다운로드/내보내기">
           <i class="fa-solid fa-download"></i> <span>내보내기</span>
         </button>
@@ -178,6 +182,9 @@
           <span class="viewport-dimension" id="viewport-dimension">100%</span>
         </div>
         <div class="preview-actions">
+          <button id="btn-inspect" class="btn-icon-square" title="요소 코드 탐색기 (라이브 프리뷰 요소 드래그 또는 클릭 시 에디터 코드 자동 이동)">
+            <i class="fa-solid fa-crosshairs"></i>
+          </button>
           <label class="auto-refresh-toggle">
             <input type="checkbox" id="auto-refresh-check" checked>
             <span>실시간 자동 갱신</span>
@@ -212,6 +219,28 @@
       <span>UTF-8</span>
     </div>
   </footer>
+
+  <!-- Update Dialog Modal -->
+  <div id="update-modal" class="modal-overlay">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fa-solid fa-cloud-arrow-down text-accent"></i>
+          <span>소프트웨어 업데이트</span>
+        </div>
+        <button id="btn-close-update-modal" class="btn-mini" title="닫기"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body" id="update-modal-body">
+        <div class="update-checking-state">
+          <i class="fa-solid fa-circle-notch fa-spin text-accent" style="font-size: 24px; margin-bottom: 12px;"></i>
+          <p>최신 버전 정보를 확인하는 중입니다...</p>
+        </div>
+      </div>
+      <div class="modal-footer" id="update-modal-footer">
+        <button id="btn-modal-close" class="btn btn-secondary">닫기</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Notification Toast -->
   <div id="toast" class="toast"></div>

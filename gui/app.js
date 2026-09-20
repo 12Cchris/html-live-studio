@@ -579,6 +579,7 @@ const state = {
   currentFilename: '새 파일.html',
   isDirty: false,
   autoRefresh: true,
+  inspectorMode: false,
   theme: 'dark', // 'dark' | 'light'
   viewport: 'desktop', // 'desktop' | 'tablet' | 'mobile'
   fontSize: 14,
@@ -604,6 +605,13 @@ const elements = {
   btnTheme: document.getElementById('btn-theme'),
   btnDownload: document.getElementById('btn-download'),
   btnPopout: document.getElementById('btn-popout'),
+  btnInspect: document.getElementById('btn-inspect'),
+  btnUpdate: document.getElementById('btn-update'),
+  updateBadge: document.getElementById('update-badge'),
+  updateModal: document.getElementById('update-modal'),
+  updateModalBody: document.getElementById('update-modal-body'),
+  updateModalFooter: document.getElementById('update-modal-footer'),
+  btnCloseUpdateModal: document.getElementById('btn-close-update-modal'),
   templateSelect: document.getElementById('template-select'),
   modeSingle: document.getElementById('mode-single'),
   modeTabs: document.getElementById('mode-tabs'),
@@ -896,8 +904,146 @@ function injectLoopGuards(code) {
              .replace(/(\bdo\s*\{)/g, '$1 window.__checkLoop && window.__checkLoop();');
 }
 
-// Sandbox Header: Infinite Loop Guard & Console Interceptor Script
+// Annotate HTML tags with line numbers for Live Preview <-> Code synchronization
+function annotateHtmlWithLineNumbers(html) {
+  if (!html) return '';
+  let inScript = false;
+  let inStyle = false;
+  let inComment = false;
+  let lineNum = 1;
+  let result = '';
+  let i = 0;
+  const len = html.length;
+
+  while (i < len) {
+    if (html[i] === '\n') {
+      lineNum++;
+      result += html[i];
+      i++;
+      continue;
+    }
+
+    if (!inScript && !inStyle && !inComment && html.startsWith('<!--', i)) {
+      inComment = true;
+      result += '<!--';
+      i += 4;
+      continue;
+    }
+    if (inComment) {
+      if (html.startsWith('-->', i)) {
+        inComment = false;
+        result += '-->';
+        i += 3;
+        continue;
+      }
+      result += html[i];
+      i++;
+      continue;
+    }
+
+    if (!inStyle && !inScript && !inComment && html.slice(i, i + 7).toLowerCase() === '<script') {
+      const tagEnd = html.indexOf('>', i);
+      if (tagEnd !== -1) {
+        const scriptOpening = html.slice(i, tagEnd + 1);
+        result += scriptOpening;
+        lineNum += (scriptOpening.match(/\n/g) || []).length;
+        i = tagEnd + 1;
+        inScript = true;
+        continue;
+      }
+    }
+    if (inScript) {
+      if (html.slice(i, i + 9).toLowerCase() === '</script>') {
+        inScript = false;
+        result += '</script>';
+        i += 9;
+        continue;
+      }
+      result += html[i];
+      i++;
+      continue;
+    }
+
+    if (!inScript && !inStyle && !inComment && html.slice(i, i + 6).toLowerCase() === '<style') {
+      const tagEnd = html.indexOf('>', i);
+      if (tagEnd !== -1) {
+        const styleOpening = html.slice(i, tagEnd + 1);
+        result += styleOpening;
+        lineNum += (styleOpening.match(/\n/g) || []).length;
+        i = tagEnd + 1;
+        inStyle = true;
+        continue;
+      }
+    }
+    if (inStyle) {
+      if (html.slice(i, i + 8).toLowerCase() === '</style>') {
+        inStyle = false;
+        result += '</style>';
+        i += 8;
+        continue;
+      }
+      result += html[i];
+      i++;
+      continue;
+    }
+
+    if (html[i] === '<' && html[i + 1] !== '/' && html[i + 1] !== '!' && html[i + 1] !== '?') {
+      const match = html.slice(i).match(/^<([a-zA-Z][a-zA-Z0-9\-]*)([\s\/>])/);
+      if (match) {
+        const tagName = match[1].toLowerCase();
+        const skippedTags = ['html', 'head', 'meta', 'link', 'title', 'base'];
+        if (!skippedTags.includes(tagName)) {
+          const delimiter = match[2];
+          result += `<${match[1]} data-loc-line="${lineNum}"${(delimiter === '>' || delimiter === '/') ? ' ' + delimiter : delimiter}`;
+          i += match[0].length;
+          continue;
+        }
+      }
+    }
+
+    result += html[i];
+    i++;
+  }
+  return result;
+}
+
+// Sandbox Header: Loop Guard, Console Interceptor & Drag/Inspect to Code
 const sandboxScript = `
+<style>
+  .__hl-inspector-box {
+    position: fixed;
+    pointer-events: none;
+    z-index: 2147483647;
+    border: 2px solid #6366f1;
+    background: rgba(99, 102, 241, 0.14);
+    border-radius: 4px;
+    box-sizing: border-box;
+    display: none;
+    transition: all 0.05s ease;
+  }
+  .__hl-inspector-tag {
+    position: absolute;
+    bottom: calc(100% + 5px);
+    left: 0;
+    background: #6366f1;
+    color: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .__hl-inspector-tag.flip-down {
+    bottom: auto;
+    top: calc(100% + 5px);
+  }
+</style>
 <script>
   (function() {
     // 1. Infinite loop guard
@@ -935,6 +1081,173 @@ const sandboxScript = `
     window.onerror = function(msg, url, line, col, error) {
       window.parent.postMessage({ type: 'CONSOLE_LOG', level: 'error', message: msg + ' (줄 ' + line + ':' + col + ')', time: new Date().toLocaleTimeString() }, '*');
     };
+
+    // 3. Live Preview Drag & Inspect to Code
+    var overlay = null;
+    var tagBadge = null;
+    var isMouseDown = false;
+    var startX = 0;
+    var startY = 0;
+    var startTarget = null;
+    var isDraggingEl = false;
+    var inspectorMode = false;
+    var hideTimer = null;
+
+    function createOverlay() {
+      if (overlay) return;
+      overlay = document.createElement('div');
+      overlay.className = '__hl-inspector-box';
+      tagBadge = document.createElement('div');
+      tagBadge.className = '__hl-inspector-tag';
+      overlay.appendChild(tagBadge);
+      var container = document.body || document.documentElement;
+      if (container) container.appendChild(overlay);
+    }
+
+    function getElementLocationLine(el) {
+      if (!el || el === document.body || el === document.documentElement) return null;
+      var line = el.getAttribute ? el.getAttribute('data-loc-line') : null;
+      if (line) return parseInt(line, 10);
+      if (el.closest) {
+        var closest = el.closest('[data-loc-line]');
+        if (closest) return parseInt(closest.getAttribute('data-loc-line'), 10);
+      }
+      return null;
+    }
+
+    function updateOverlay(el, statusText) {
+      if (!el || el === document.body || el === document.documentElement) {
+        if (overlay) overlay.style.display = 'none';
+        return;
+      }
+      createOverlay();
+      var rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return;
+
+      overlay.style.display = 'block';
+      overlay.style.top = rect.top + 'px';
+      overlay.style.left = rect.left + 'px';
+      overlay.style.width = rect.width + 'px';
+      overlay.style.height = rect.height + 'px';
+
+      var tagName = el.tagName ? el.tagName.toLowerCase() : 'element';
+      var idStr = el.id ? ('#' + el.id) : '';
+      var classStr = (typeof el.className === 'string' && el.className) ? ('.' + el.className.trim().split(/\\s+/)[0]) : '';
+      var line = getElementLocationLine(el);
+      var lineStr = line ? (' [Ln ' + line + ']') : '';
+
+      tagBadge.textContent = '<' + tagName + idStr + classStr + '>' + lineStr + (statusText ? ' ' + statusText : '');
+
+      if (rect.top < 32) {
+        tagBadge.classList.add('flip-down');
+      } else {
+        tagBadge.classList.remove('flip-down');
+      }
+    }
+
+    function hideOverlay(delay) {
+      if (hideTimer) clearTimeout(hideTimer);
+      if (delay) {
+        hideTimer = setTimeout(function() {
+          if (overlay) overlay.style.display = 'none';
+        }, delay);
+      } else {
+        if (overlay) overlay.style.display = 'none';
+      }
+    }
+
+    function sendCodeLocateRequest(target, selectedText) {
+      var line = getElementLocationLine(target);
+      var tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
+      var id = target ? target.id : '';
+      var className = (target && typeof target.className === 'string') ? target.className : '';
+      var innerText = (target && target.innerText) ? target.innerText.slice(0, 100) : '';
+
+      window.parent.postMessage({
+        type: 'LOCATE_CODE_FROM_PREVIEW',
+        line: line,
+        text: selectedText || '',
+        tagName: tagName,
+        id: id,
+        className: className,
+        innerText: innerText
+      }, '*');
+    }
+
+    window.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      isMouseDown = true;
+      isDraggingEl = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      startTarget = e.target;
+    }, true);
+
+    window.addEventListener('mousemove', function(e) {
+      if (isMouseDown) {
+        var dist = Math.hypot(e.clientX - startX, e.clientY - startY);
+        if (dist > 3) {
+          isDraggingEl = true;
+          var currentEl = document.elementFromPoint(e.clientX, e.clientY) || startTarget;
+          updateOverlay(currentEl, '🎯 드래그 탐색 중...');
+        }
+      } else if (inspectorMode) {
+        var target = document.elementFromPoint(e.clientX, e.clientY);
+        updateOverlay(target, '클릭 시 코드 이동');
+      }
+    }, true);
+
+    window.addEventListener('mouseup', function(e) {
+      if (!isMouseDown) return;
+      isMouseDown = false;
+
+      var sel = window.getSelection ? window.getSelection() : null;
+      var selectedText = sel ? sel.toString().trim() : '';
+      var finalTarget = isDraggingEl ? (document.elementFromPoint(e.clientX, e.clientY) || startTarget) : startTarget;
+
+      if (isDraggingEl || selectedText.length > 0 || inspectorMode || e.altKey) {
+        updateOverlay(finalTarget, '✓ 코드 찾는 중...');
+        sendCodeLocateRequest(finalTarget, selectedText);
+        hideOverlay(500);
+
+        if (inspectorMode && e.target && e.target.tagName === 'A') {
+          e.preventDefault();
+        }
+      } else {
+        hideOverlay(0);
+      }
+      isDraggingEl = false;
+    }, true);
+
+    window.addEventListener('dragend', function(e) {
+      if (startTarget) {
+        var sel = window.getSelection ? window.getSelection() : null;
+        var selectedText = sel ? sel.toString().trim() : '';
+        sendCodeLocateRequest(startTarget, selectedText);
+        hideOverlay(300);
+      }
+      isMouseDown = false;
+      isDraggingEl = false;
+    });
+
+    window.addEventListener('message', function(ev) {
+      if (ev.data && ev.data.type === 'SET_INSPECTOR_MODE') {
+        inspectorMode = !!ev.data.enabled;
+        document.body.style.cursor = inspectorMode ? 'crosshair' : 'default';
+        if (!inspectorMode) hideOverlay(0);
+      } else if (ev.data && ev.data.type === 'PARENT_MOUSE_UP') {
+        if (isMouseDown && (isDraggingEl || (window.getSelection && window.getSelection().toString().trim()))) {
+          var sel = window.getSelection ? window.getSelection() : null;
+          var selectedText = sel ? sel.toString().trim() : '';
+          sendCodeLocateRequest(startTarget, selectedText);
+          hideOverlay(350);
+        } else {
+          hideOverlay(0);
+        }
+        isMouseDown = false;
+        isDraggingEl = false;
+      }
+    });
   })();
 <\/script>
 `;
@@ -942,7 +1255,18 @@ const sandboxScript = `
 // Trigger Live Preview Rendering with Scroll Preservation
 function triggerRender() {
   state.renderCount++;
-  const rawCode = getFullCode();
+  
+  let rawCode;
+  if (state.mode === 'tabs') {
+    const h = state.models.html ? state.models.html.getValue() : '';
+    const c = state.models.css ? state.models.css.getValue() : '';
+    const j = state.models.js ? state.models.js.getValue() : '';
+    const annotatedH = annotateHtmlWithLineNumbers(h);
+    rawCode = combineComponentsToHtml(annotatedH, c, j);
+  } else {
+    const singleCode = state.models.single ? state.models.single.getValue() : '';
+    rawCode = annotateHtmlWithLineNumbers(singleCode);
+  }
   
   // Apply Loop Guards to scripts
   const codeWithGuards = injectLoopGuards(rawCode);
@@ -969,11 +1293,19 @@ function triggerRender() {
   // Update srcdoc
   elements.previewFrame.srcdoc = injectedCode;
 
-  // Restore scroll after load
+  // Restore scroll after load and sync inspector mode
   elements.previewFrame.onload = function() {
     try {
-      if (elements.previewFrame.contentWindow && (scrollX > 0 || scrollY > 0)) {
-        elements.previewFrame.contentWindow.scrollTo(scrollX, scrollY);
+      if (elements.previewFrame.contentWindow) {
+        if (scrollX > 0 || scrollY > 0) {
+          elements.previewFrame.contentWindow.scrollTo(scrollX, scrollY);
+        }
+        if (state.inspectorMode) {
+          elements.previewFrame.contentWindow.postMessage({
+            type: 'SET_INSPECTOR_MODE',
+            enabled: true
+          }, '*');
+        }
       }
     } catch (e) {}
   };
@@ -981,10 +1313,179 @@ function triggerRender() {
   setStatus('미리보기 실시간 동기화됨');
 }
 
-// Receive Console Logs from Preview Frame
+// Monaco Code Finder Highlight State
+let activeEditorDecorations = [];
+let decorationTimeout = null;
+
+function highlightCodeInEditor(line, startCol, endCol) {
+  if (!state.editor) return;
+  if (decorationTimeout) clearTimeout(decorationTimeout);
+
+  const range = new monaco.Range(line, startCol, line, endCol);
+  const lineRange = new monaco.Range(line, 1, line, 1);
+
+  activeEditorDecorations = state.editor.deltaDecorations(activeEditorDecorations, [
+    {
+      range: lineRange,
+      options: {
+        isWholeLine: true,
+        className: 'monaco-pulse-line'
+      }
+    },
+    {
+      range: range,
+      options: {
+        isWholeLine: false,
+        className: 'monaco-pulse-target'
+      }
+    }
+  ]);
+
+  decorationTimeout = setTimeout(() => {
+    if (state.editor) {
+      activeEditorDecorations = state.editor.deltaDecorations(activeEditorDecorations, []);
+    }
+  }, 1800);
+}
+
+// Locate and Highlight Code in Monaco from Live Preview Drag / Click
+function handleLocateCodeFromPreview(data) {
+  const { line, text, tagName, id, className, innerText } = data;
+  if (!state.editor) return;
+
+  // Determine target tab and model
+  let targetTab = 'html';
+  let targetModel = state.mode === 'tabs' ? state.models.html : state.models.single;
+
+  if (!targetModel) return;
+
+  let targetLine = null;
+  let targetColStart = 1;
+  let targetColEnd = 1;
+
+  const totalLines = targetModel.getLineCount();
+
+  // Strategy 1: data-loc-line provided
+  if (line && line >= 1 && line <= totalLines) {
+    const lineContent = targetModel.getLineContent(line);
+
+    if (text && lineContent.includes(text)) {
+      targetLine = line;
+      targetColStart = lineContent.indexOf(text) + 1;
+      targetColEnd = targetColStart + text.length;
+    } else if (text) {
+      const matches = targetModel.findMatches(text, false, false, true, null, true);
+      if (matches && matches.length > 0) {
+        let bestMatch = matches[0];
+        let minDiff = Math.abs(matches[0].range.startLineNumber - line);
+        for (let i = 1; i < matches.length; i++) {
+          const diff = Math.abs(matches[i].range.startLineNumber - line);
+          if (diff < minDiff) {
+            minDiff = diff;
+            bestMatch = matches[i];
+          }
+        }
+        targetLine = bestMatch.range.startLineNumber;
+        targetColStart = bestMatch.range.startColumn;
+        targetColEnd = bestMatch.range.endColumn;
+      }
+    }
+
+    if (!targetLine) {
+      targetLine = line;
+      if (tagName) {
+        const tagPattern = new RegExp('<' + tagName + '\\b', 'i');
+        const match = lineContent.match(tagPattern);
+        if (match) {
+          targetColStart = match.index + 1;
+          targetColEnd = targetColStart + match[0].length;
+        } else {
+          targetColStart = Math.max(1, lineContent.search(/\S/) + 1);
+          targetColEnd = lineContent.length + 1;
+        }
+      } else {
+        targetColStart = Math.max(1, lineContent.search(/\S/) + 1);
+        targetColEnd = lineContent.length + 1;
+      }
+    }
+  } else if (text) {
+    // Strategy 2: Text search across model
+    const matches = targetModel.findMatches(text, false, false, true, null, true);
+    if (matches && matches.length > 0) {
+      targetLine = matches[0].range.startLineNumber;
+      targetColStart = matches[0].range.startColumn;
+      targetColEnd = matches[0].range.endColumn;
+    }
+  }
+
+  // Strategy 3: ID search
+  if (!targetLine && id) {
+    const idMatches = targetModel.findMatches(`id="${id}"`, false, false, true, null, true)
+      || targetModel.findMatches(`id='${id}'`, false, false, true, null, true);
+    if (idMatches && idMatches.length > 0) {
+      targetLine = idMatches[0].range.startLineNumber;
+      targetColStart = idMatches[0].range.startColumn;
+      targetColEnd = idMatches[0].range.endColumn;
+    }
+  }
+
+  // Strategy 4: Class search
+  if (!targetLine && className) {
+    const firstClass = className.trim().split(/\s+/)[0];
+    if (firstClass) {
+      const classMatches = targetModel.findMatches(firstClass, false, false, true, null, true);
+      if (classMatches && classMatches.length > 0) {
+        targetLine = classMatches[0].range.startLineNumber;
+        targetColStart = classMatches[0].range.startColumn;
+        targetColEnd = classMatches[0].range.endColumn;
+      }
+    }
+  }
+
+  // Strategy 5: InnerText search snippet
+  if (!targetLine && innerText && innerText.trim().length > 2) {
+    const cleanSnippet = innerText.trim().slice(0, 30);
+    const snippetMatches = targetModel.findMatches(cleanSnippet, false, false, true, null, true);
+    if (snippetMatches && snippetMatches.length > 0) {
+      targetLine = snippetMatches[0].range.startLineNumber;
+      targetColStart = snippetMatches[0].range.startColumn;
+      targetColEnd = snippetMatches[0].range.endColumn;
+    }
+  }
+
+  if (!targetLine) {
+    showToast('해당 요소의 코드를 에디터에서 찾을 수 없습니다.', 'warning');
+    return;
+  }
+
+  // Switch tab if needed
+  if (state.mode === 'tabs' && state.currentTab !== targetTab) {
+    switchTab(targetTab);
+  }
+
+  if (targetColEnd <= targetColStart) {
+    targetColEnd = targetColStart + 1;
+  }
+
+  const scrollType = (window.monaco && monaco.editor && monaco.editor.ScrollType) ? monaco.editor.ScrollType.Smooth : undefined;
+  state.editor.revealLineInCenter(targetLine, scrollType);
+  state.editor.setSelection(new monaco.Range(targetLine, targetColStart, targetLine, targetColEnd));
+  state.editor.focus();
+
+  highlightCodeInEditor(targetLine, targetColStart, targetColEnd);
+
+  const tagLabel = tagName ? `<${tagName}>` : '요소';
+  const label = text ? `"${text.length > 20 ? text.slice(0, 20) + '...' : text}"` : tagLabel;
+  setStatus(`🎯 코드 탐색: ${label} (줄 ${targetLine})`);
+  showToast(`🎯 코드 발견: ${label} (줄 ${targetLine})`, 'info');
+}
+
+// Receive Messages from Preview Frame
 window.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'CONSOLE_LOG') {
     addConsoleEntry(event.data.level, event.data.message, event.data.time);
+  } else if (event.data && event.data.type === 'LOCATE_CODE_FROM_PREVIEW') {
+    handleLocateCodeFromPreview(event.data);
   }
 });
 
@@ -1144,6 +1645,23 @@ elements.btnRefresh.addEventListener('click', () => {
   triggerRender();
   showToast('미리보기를 새로고침했습니다.');
 });
+
+// Element Inspector Toggle (Click/Drag to Code)
+if (elements.btnInspect) {
+  elements.btnInspect.addEventListener('click', () => {
+    state.inspectorMode = !state.inspectorMode;
+    elements.btnInspect.classList.toggle('active', state.inspectorMode);
+    try {
+      if (elements.previewFrame && elements.previewFrame.contentWindow) {
+        elements.previewFrame.contentWindow.postMessage({
+          type: 'SET_INSPECTOR_MODE',
+          enabled: state.inspectorMode
+        }, '*');
+      }
+    } catch (e) {}
+    showToast(state.inspectorMode ? '요소 코드 탐색기 활성화 (요소를 클릭/드래그하여 코드를 찾으세요)' : '요소 코드 탐색기 비활성화 (마우스 드래그 자동 탐색 유지)', 'info');
+  });
+}
 
 // Format Code Action
 function formatActiveEditor() {
@@ -1346,6 +1864,11 @@ window.addEventListener('mouseup', () => {
     elements.previewFrame.style.pointerEvents = 'auto';
     if (state.editor) state.editor.layout();
   }
+  try {
+    if (elements.previewFrame && elements.previewFrame.contentWindow) {
+      elements.previewFrame.contentWindow.postMessage({ type: 'PARENT_MOUSE_UP' }, '*');
+    }
+  } catch (e) {}
 });
 
 // Global Keyboard Shortcuts
@@ -1388,7 +1911,220 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+// ==========================================
+// Software Auto-Update System
+// ==========================================
+let latestUpdateInfo = null;
+
+function openUpdateModal() {
+  if (!elements.updateModal) return;
+  elements.updateModal.style.display = 'flex';
+  requestAnimationFrame(() => elements.updateModal.classList.add('active'));
+}
+
+function closeUpdateModal() {
+  if (!elements.updateModal) return;
+  elements.updateModal.classList.remove('active');
+  setTimeout(() => {
+    elements.updateModal.style.display = 'none';
+  }, 200);
+}
+
+async function checkSoftwareUpdates(isUserInitiated = false) {
+  if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.check_for_updates) {
+    if (isUserInitiated) {
+      openUpdateModal();
+      renderUpdateStatus({
+        success: true,
+        has_update: false,
+        current_version: '1.1.0',
+        message: '웹 브라우저 모드입니다. GitHub에서 최신 버전을 확인할 수 있습니다.'
+      });
+    }
+    return;
+  }
+
+  if (isUserInitiated) {
+    openUpdateModal();
+    elements.updateModalBody.innerHTML = `
+      <div class="update-checking-state">
+        <i class="fa-solid fa-circle-notch fa-spin" style="font-size: 30px; margin-bottom: 14px; color: #6366f1;"></i>
+        <p style="font-weight: 600; font-size: 14px; color: var(--text-primary); margin-bottom: 4px;">최신 버전 정보를 확인하는 중...</p>
+        <span style="font-size: 12px; color: var(--text-muted);">GitHub Releases 서버와 통신 중입니다</span>
+      </div>
+    `;
+    elements.updateModalFooter.innerHTML = `
+      <button id="btn-modal-close-checking" class="btn btn-secondary">닫기</button>
+    `;
+    document.getElementById('btn-modal-close-checking')?.addEventListener('click', closeUpdateModal);
+  }
+
+  try {
+    const res = await window.pywebview.api.check_for_updates();
+    latestUpdateInfo = res;
+
+    if (res && res.has_update) {
+      if (elements.updateBadge) elements.updateBadge.style.display = 'block';
+      if (!isUserInitiated) {
+        // 자동 확인 시에도 모달을 열어 업데이트를 바로 적용할 수 있도록 안내
+        openUpdateModal();
+        renderUpdateStatus(res);
+      } else {
+        renderUpdateStatus(res);
+      }
+    } else {
+      if (elements.updateBadge) elements.updateBadge.style.display = 'none';
+      if (isUserInitiated) {
+        renderUpdateStatus(res);
+      }
+    }
+  } catch (err) {
+    if (isUserInitiated) {
+      renderUpdateStatus({
+        success: false,
+        error: '업데이트 서버에 연결할 수 없습니다: ' + (err.message || err)
+      });
+    }
+  }
+}
+
+function renderUpdateStatus(info) {
+  if (!elements.updateModalBody || !elements.updateModalFooter) return;
+
+  if (info && info.has_update) {
+    elements.updateModalBody.innerHTML = `
+      <div class="version-comparison">
+        <div class="version-box">
+          <span class="version-label">현재 버전</span>
+          <span class="version-value">v${escapeHtml(info.current_version || '1.1.0')}</span>
+        </div>
+        <i class="fa-solid fa-arrow-right-long version-arrow"></i>
+        <div class="version-box">
+          <span class="version-label">새로운 최신 버전</span>
+          <span class="version-value accent">v${escapeHtml(info.latest_version)}</span>
+        </div>
+      </div>
+      <h4 style="margin: 0 0 6px 0; font-size: 13px; color: var(--text-primary); font-weight: 600;">
+        ${escapeHtml(info.release_title || '새 버전 안내')}
+      </h4>
+      <div class="update-release-notes">${escapeHtml(info.release_notes || '새로운 기능과 안정성 개선이 포함되어 있습니다.')}</div>
+      <div id="update-download-progress-container" style="display:none; margin-top: 14px;">
+        <div style="display:flex; justify-content:space-between; font-size: 12px; margin-bottom: 6px;">
+          <span id="update-progress-status" style="color: #38bdf8; font-weight: 500;">다운로드 및 패치 준비 중...</span>
+        </div>
+        <div class="update-progress-bar">
+          <div class="update-progress-fill" id="update-progress-fill"></div>
+        </div>
+      </div>
+    `;
+
+    elements.updateModalFooter.innerHTML = `
+      <button id="btn-modal-open-browser" class="btn btn-secondary" title="브라우저에서 릴리즈 페이지 열기">
+        <i class="fa-solid fa-arrow-up-right-from-square"></i> 웹에서 보기
+      </button>
+      <button id="btn-modal-do-update" class="btn btn-primary">
+        <i class="fa-solid fa-download"></i> 지금 자동 업데이트
+      </button>
+    `;
+
+    document.getElementById('btn-modal-open-browser')?.addEventListener('click', () => {
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.open_external_url) {
+        window.pywebview.api.open_external_url(info.release_url || 'https://github.com/12Cchris/html-live-studio/releases');
+      } else {
+        window.open(info.release_url || 'https://github.com/12Cchris/html-live-studio/releases', '_blank');
+      }
+    });
+
+    document.getElementById('btn-modal-do-update')?.addEventListener('click', async () => {
+      const btnDoUpdate = document.getElementById('btn-modal-do-update');
+      const progressContainer = document.getElementById('update-download-progress-container');
+      const progressStatus = document.getElementById('update-progress-status');
+
+      if (btnDoUpdate) {
+        btnDoUpdate.disabled = true;
+        btnDoUpdate.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> 업데이트 다운로드 중...';
+      }
+      if (progressContainer) progressContainer.style.display = 'block';
+      if (progressStatus) progressStatus.textContent = '최신 실행 파일 다운로드 중... 잠시만 기다려주세요.';
+
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.download_and_install_update) {
+        try {
+          const res = await window.pywebview.api.download_and_install_update(info.download_url);
+          if (res && res.success) {
+            if (progressStatus) progressStatus.textContent = res.message || '업데이트 적용 완료! 프로그램을 재시작합니다...';
+            showToast(res.message || '업데이트 적용 완료! 재시작 중...', 'info');
+          } else if (res && res.error) {
+            alert('업데이트 실패: ' + res.error);
+            if (btnDoUpdate) {
+              btnDoUpdate.disabled = false;
+              btnDoUpdate.innerHTML = '<i class="fa-solid fa-download"></i> 재시도';
+            }
+          }
+        } catch (e) {
+          alert('업데이트 오류: ' + (e.message || e));
+          if (btnDoUpdate) {
+            btnDoUpdate.disabled = false;
+            btnDoUpdate.innerHTML = '<i class="fa-solid fa-download"></i> 재시도';
+          }
+        }
+      } else {
+        window.open(info.download_url || info.release_url, '_blank');
+      }
+    });
+  } else {
+    // Up to date
+    elements.updateModalBody.innerHTML = `
+      <div style="text-align: center; padding: 20px 10px;">
+        <i class="fa-solid fa-circle-check text-green" style="font-size: 42px; color: #10b981; margin-bottom: 14px;"></i>
+        <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">최신 버전을 사용 중입니다</h3>
+        <p style="margin: 0 0 14px 0; font-size: 13px; color: var(--text-secondary);">
+          현재 설치 버전: <strong style="color: #38bdf8; font-family: var(--font-mono);">v${escapeHtml(info.current_version || '1.1.0')}</strong>
+        </p>
+        <p style="margin: 0; font-size: 11px; color: var(--text-muted); line-height: 1.5;">
+          ${escapeHtml(info.message || '현재 버전이 가장 최신입니다.')}<br>
+          새로운 버전이 출시되면 실행 시 자동으로 안내해 드립니다.
+        </p>
+      </div>
+    `;
+
+    elements.updateModalFooter.innerHTML = `
+      <button id="btn-modal-open-repo" class="btn btn-secondary" title="GitHub 저장소 바로가기">
+        <i class="fa-brands fa-github"></i> GitHub 저장소
+      </button>
+      <button id="btn-modal-close-done" class="btn btn-primary">확인</button>
+    `;
+
+    document.getElementById('btn-modal-open-repo')?.addEventListener('click', () => {
+      const repoUrl = 'https://github.com/12Cchris/html-live-studio';
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.open_external_url) {
+        window.pywebview.api.open_external_url(repoUrl);
+      } else {
+        window.open(repoUrl, '_blank');
+      }
+    });
+
+    document.getElementById('btn-modal-close-done')?.addEventListener('click', closeUpdateModal);
+  }
+}
+
+// Wire up Update Modal Event Listeners
+if (elements.btnUpdate) {
+  elements.btnUpdate.addEventListener('click', () => checkSoftwareUpdates(true));
+}
+if (elements.btnCloseUpdateModal) {
+  elements.btnCloseUpdateModal.addEventListener('click', closeUpdateModal);
+}
+if (elements.updateModal) {
+  elements.updateModal.addEventListener('click', (e) => {
+    if (e.target === elements.updateModal) closeUpdateModal();
+  });
+}
+
 // Boot the editor when DOM is ready
 window.addEventListener('DOMContentLoaded', () => {
   initMonaco();
+  // 3초 후 백그라운드 자동 업데이트 확인
+  setTimeout(() => {
+    checkSoftwareUpdates(false);
+  }, 3000);
 });

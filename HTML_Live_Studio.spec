@@ -1,4 +1,4 @@
-﻿# -*- mode: python ; coding: utf-8 -*-
+# -*- mode: python ; coding: utf-8 -*-
 
 block_cipher = None
 
@@ -7,7 +7,7 @@ excludes = [
     'unittest', 'test', 'pydoc', 'pydoc_data', 'doctest',
     'sqlite3', '_sqlite3',
     'yt_dlp', 'PIL', 'Pillow', 'keyboard', 'mouse',
-    'xmlrpc', 'pdb', 'idlelib', 'distutils', 'setuptools', 'pip',
+    'xmlrpc', 'pdb', 'idlelib', 'pip',
     'multiprocessing', 'concurrent.futures',
     'ftplib', 'imaplib', 'poplib', 'smtplib', 'telnetlib', 'nntplib',
     'curses', 'py_compile', 'compileall'
