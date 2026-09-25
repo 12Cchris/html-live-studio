@@ -10,7 +10,7 @@ import subprocess
 import webbrowser
 import webview
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 GITHUB_REPO = "12Cchris/html-live-studio"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -251,6 +251,8 @@ class EditorAPI:
             bat_content = f"""@echo off
 chcp 65001 >nul
 setlocal
+rem start the new exe as an independent process (do not inherit onefile temp env)
+set PYINSTALLER_RESET_ENVIRONMENT=1
 set TARGET="{current_exe}"
 set NEWFILE="{new_exe_path}"
 set PID={current_pid}

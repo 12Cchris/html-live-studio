@@ -592,7 +592,8 @@ const state = {
   },
   debounceTimer: null,
   consoleEntries: [],
-  renderCount: 0
+  renderCount: 0,
+  previewJsStartLine: 0 // tabs 모드에서 미리보기 문서 내 JS 시작 줄 (오류 줄 보정용)
 };
 
 // DOM Elements
@@ -667,6 +668,14 @@ function setStatus(message, isSuccess = true) {
   elements.statusMessage.innerHTML = `${icon} ${message}`;
 }
 
+// <script> 속성 문자열을 보고 '직접 작성한 일반 JS'인지 판별 (src 없음, type 없음/JS)
+function isInlineClassicScript(attrs) {
+  if (/\bsrc\s*=/i.test(attrs)) return false;
+  const m = attrs.match(/\btype\s*=\s*["']?([^"'\s>]+)/i);
+  const type = m ? m[1].toLowerCase() : '';
+  return !type || type === 'text/javascript' || type === 'application/javascript';
+}
+
 // Split HTML into HTML, CSS, JS for tabbed mode
 function parseHtmlToComponents(fullHtml) {
   let css = '';
@@ -680,12 +689,14 @@ function parseHtmlToComponents(fullHtml) {
     html = html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
   }
 
-  // Extract <script>...</script>
-  const scriptMatches = html.match(/<script[^>]*>([\s\S]*?)<\/script>/gi);
-  if (scriptMatches) {
-    js = scriptMatches.map(s => s.replace(/<\/?script[^>]*>/gi, '')).join('\n\n');
-    html = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
-  }
+  // Extract inline classic <script> only (외부 src / module / JSON 등은 HTML 탭에 그대로 둠)
+  const jsParts = [];
+  html = html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (whole, attrs, body) => {
+    if (!isInlineClassicScript(attrs)) return whole;
+    jsParts.push(body);
+    return '';
+  });
+  js = jsParts.join('\n\n');
 
   return { html: html.trim(), css: css.trim(), js: js.trim() };
 }
@@ -695,10 +706,12 @@ function combineComponentsToHtml(html, css, js) {
   if (html.includes('</head>') && html.includes('</body>')) {
     let result = html;
     if (css) {
-      result = result.replace('</head>', `  <style>\n${css}\n  </style>\n</head>`);
+      const styleBlock = `  <style>\n${css}\n  </style>\n</head>`;
+      result = result.replace('</head>', () => styleBlock);
     }
     if (js) {
-      result = result.replace('</body>', `  <script>\n${js}\n  <\/script>\n</body>`);
+      const scriptBlock = `  <script>\n${js}\n  <\/script>\n</body>`;
+      result = result.replace('</body>', () => scriptBlock);
     }
     return result;
   } else {
@@ -898,10 +911,19 @@ function onCodeChange() {
   }
 }
 
-// Infinite Loop Protection Injector
+// Infinite Loop Protection Injector (인라인 <script> 내부에만 적용)
+const LOOP_GUARD_CALL = ' window.__checkLoop && window.__checkLoop();';
+const LOOP_HEAD_RE = /(\b(?:for|while)\s*\((?:[^()]|\([^()]*\))*\)\s*\{)/g;
+const DO_HEAD_RE = /(\bdo\s*\{)/g;
+
 function injectLoopGuards(code) {
-  return code.replace(/(\b(?:for|while)\s*\([^)]*\)\s*\{)/g, '$1 window.__checkLoop && window.__checkLoop();')
-             .replace(/(\bdo\s*\{)/g, '$1 window.__checkLoop && window.__checkLoop();');
+  return code.replace(/(<script\b)([^>]*)>([\s\S]*?)(<\/script>)/gi, (whole, open, attrs, body, close) => {
+    if (!isInlineClassicScript(attrs)) return whole;
+    const guarded = body
+      .replace(LOOP_HEAD_RE, (m) => m + LOOP_GUARD_CALL)
+      .replace(DO_HEAD_RE, (m) => m + LOOP_GUARD_CALL);
+    return open + attrs + '>' + guarded + close;
+  });
 }
 
 // Annotate HTML tags with line numbers for Live Preview <-> Code synchronization
@@ -996,6 +1018,8 @@ function annotateHtmlWithLineNumbers(html) {
           const delimiter = match[2];
           result += `<${match[1]} data-loc-line="${lineNum}"${(delimiter === '>' || delimiter === '/') ? ' ' + delimiter : delimiter}`;
           i += match[0].length;
+          // 태그 이름 바로 뒤가 줄바꿈이면 이 문자를 여기서 소비했으므로 줄 번호를 직접 올려준다
+          if (delimiter === '\n') lineNum++;
           continue;
         }
       }
@@ -1047,22 +1071,31 @@ const sandboxScript = `
 <script>
   (function() {
     // 1. Infinite loop guard
-    var __loopStartTime = Date.now();
+    // 이벤트/타이머/스크립트 실행 한 덩어리(마이크로태스크 전까지)의 연속 실행 시간을 잰다.
+    // (예전에는 페이지 로드 시점부터 누적 반복 수를 세서, 애니메이션이 1~2초 뒤 오탐으로 멈췄음)
+    var __loopStartTime = 0;
     var __loopCounter = 0;
+    var __loopArmed = false;
     window.__checkLoop = function() {
-      __loopCounter++;
-      if (__loopCounter > 4000) {
-        if (Date.now() - __loopStartTime > 1200) {
-          window.parent.postMessage({ type: 'CONSOLE_LOG', level: 'error', message: '⚠️ 무한 루프 감지: 코드 실행이 안전하게 차단되었습니다.', time: new Date().toLocaleTimeString() }, '*');
-          throw new Error('Infinite loop detected and aborted');
-        }
+      if (!__loopArmed) {
+        __loopArmed = true;
+        __loopStartTime = Date.now();
         __loopCounter = 0;
+        Promise.resolve().then(function() { __loopArmed = false; });
+        return;
+      }
+      __loopCounter++;
+      if (__loopCounter % 1000 === 0 && Date.now() - __loopStartTime > 2000) {
+        __loopArmed = false;
+        window.parent.postMessage({ type: 'CONSOLE_LOG', level: 'error', message: '⚠️ 무한 루프 감지: 코드 실행이 안전하게 차단되었습니다.', time: new Date().toLocaleTimeString() }, '*');
+        throw new Error('Infinite loop detected and aborted');
       }
     };
 
     // 2. Console logs interceptor
     function serialize(data) {
       try {
+        if (data instanceof Error) return (data.name || 'Error') + ': ' + data.message;
         if (typeof data === 'object') return JSON.stringify(data);
         return String(data);
       } catch (e) {
@@ -1079,8 +1112,12 @@ const sandboxScript = `
       };
     });
     window.onerror = function(msg, url, line, col, error) {
-      window.parent.postMessage({ type: 'CONSOLE_LOG', level: 'error', message: msg + ' (줄 ' + line + ':' + col + ')', time: new Date().toLocaleTimeString() }, '*');
+      // 줄 번호는 미리보기 문서 기준이라 부모(에디터)에서 실제 코드 줄로 보정해서 표시
+      window.parent.postMessage({ type: 'CONSOLE_LOG', level: 'error', message: String(msg), errorLine: line || 0, errorCol: col || 0, time: new Date().toLocaleTimeString() }, '*');
     };
+    window.addEventListener('unhandledrejection', function(ev) {
+      window.parent.postMessage({ type: 'CONSOLE_LOG', level: 'error', message: '처리되지 않은 Promise 거부: ' + serialize(ev.reason), time: new Date().toLocaleTimeString() }, '*');
+    });
 
     // 3. Live Preview Drag & Inspect to Code
     var overlay = null;
@@ -1104,15 +1141,42 @@ const sandboxScript = `
       if (container) container.appendChild(overlay);
     }
 
-    function getElementLocationLine(el) {
-      if (!el || el === document.body || el === document.documentElement) return null;
-      var line = el.getAttribute ? el.getAttribute('data-loc-line') : null;
-      if (line) return parseInt(line, 10);
+    // 요소가 자기 자신의 data-loc-line 을 가지면 exact, 조상에서 찾으면 exact=false (JS로 만든 요소 등)
+    function getElementLocation(el) {
+      if (!el || !el.getAttribute) return { line: null, exact: false, tag: '' };
+      var own = el.getAttribute('data-loc-line');
+      if (own) return { line: parseInt(own, 10), exact: true, tag: el.tagName.toLowerCase() };
       if (el.closest) {
         var closest = el.closest('[data-loc-line]');
-        if (closest) return parseInt(closest.getAttribute('data-loc-line'), 10);
+        if (closest) return { line: parseInt(closest.getAttribute('data-loc-line'), 10), exact: false, tag: closest.tagName.toLowerCase() };
       }
-      return null;
+      return { line: null, exact: false, tag: '' };
+    }
+
+    function getElementLocationLine(el) {
+      if (!el || el === document.body || el === document.documentElement) return null;
+      return getElementLocation(el).line;
+    }
+
+    // 드래그로 텍스트를 선택했을 때, 마우스를 놓은 위치가 아니라 '선택이 시작된 요소'를 기준으로 삼는다
+    function getSelectionStartElement() {
+      try {
+        var sel = window.getSelection ? window.getSelection() : null;
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+        var node = sel.getRangeAt(0).startContainer;
+        if (node && node.nodeType === 3) node = node.parentElement;
+        return (node && node.nodeType === 1) ? node : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function resolveTarget(fallbackTarget, selectedText) {
+      if (selectedText) {
+        var selEl = getSelectionStartElement();
+        if (selEl) return selEl;
+      }
+      return fallbackTarget;
     }
 
     function updateOverlay(el, statusText) {
@@ -1157,15 +1221,20 @@ const sandboxScript = `
     }
 
     function sendCodeLocateRequest(target, selectedText) {
-      var line = getElementLocationLine(target);
-      var tagName = target && target.tagName ? target.tagName.toLowerCase() : '';
-      var id = target ? target.id : '';
-      var className = (target && typeof target.className === 'string') ? target.className : '';
-      var innerText = (target && target.innerText) ? target.innerText.slice(0, 100) : '';
+      var isRoot = !target || target === document.documentElement;
+      var loc = isRoot ? { line: null, exact: false, tag: '' } : getElementLocation(target);
+      // <html>/<body> 자체를 눌렀는데 소스 줄 정보가 없으면, 엉뚱한 본문 텍스트로 검색하지 않도록 비워서 보낸다
+      var blank = isRoot || (target === document.body && !loc.line);
+      var tagName = (!blank && target.tagName) ? target.tagName.toLowerCase() : '';
+      var id = blank ? '' : (target.id || '');
+      var className = (!blank && typeof target.className === 'string') ? target.className : '';
+      var innerText = (!blank && target.innerText) ? target.innerText.slice(0, 100) : '';
 
       window.parent.postMessage({
         type: 'LOCATE_CODE_FROM_PREVIEW',
-        line: line,
+        line: loc.line,
+        exact: loc.exact,
+        locTag: loc.tag,
         text: selectedText || '',
         tagName: tagName,
         id: id,
@@ -1204,6 +1273,7 @@ const sandboxScript = `
       var sel = window.getSelection ? window.getSelection() : null;
       var selectedText = sel ? sel.toString().trim() : '';
       var finalTarget = isDraggingEl ? (document.elementFromPoint(e.clientX, e.clientY) || startTarget) : startTarget;
+      finalTarget = resolveTarget(finalTarget, selectedText);
 
       if (isDraggingEl || selectedText.length > 0 || inspectorMode || e.altKey) {
         updateOverlay(finalTarget, '✓ 코드 찾는 중...');
@@ -1223,7 +1293,7 @@ const sandboxScript = `
       if (startTarget) {
         var sel = window.getSelection ? window.getSelection() : null;
         var selectedText = sel ? sel.toString().trim() : '';
-        sendCodeLocateRequest(startTarget, selectedText);
+        sendCodeLocateRequest(resolveTarget(startTarget, selectedText), selectedText);
         hideOverlay(300);
       }
       isMouseDown = false;
@@ -1239,7 +1309,7 @@ const sandboxScript = `
         if (isMouseDown && (isDraggingEl || (window.getSelection && window.getSelection().toString().trim()))) {
           var sel = window.getSelection ? window.getSelection() : null;
           var selectedText = sel ? sel.toString().trim() : '';
-          sendCodeLocateRequest(startTarget, selectedText);
+          sendCodeLocateRequest(resolveTarget(startTarget, selectedText), selectedText);
           hideOverlay(350);
         } else {
           hideOverlay(0);
@@ -1252,6 +1322,23 @@ const sandboxScript = `
 <\/script>
 `;
 
+// 샌드박스가 문서 앞에 끼어들며 밀어내는 줄 수 (오류 줄 번호 보정용)
+const SANDBOX_LINE_COUNT = (sandboxScript.match(/\n/g) || []).length;
+
+// <head ...> 뒤(없으면 <html ...> 뒤, 그것도 없으면 DOCTYPE 뒤)에 샌드박스를 끼워 넣는다.
+// - <head lang="ko"> 처럼 속성이 붙은 태그도 처리
+// - DOCTYPE 앞에 내용을 넣어 미리보기가 쿼크 모드로 바뀌는 문제 방지
+// - 함수 치환자를 써서 샌드박스 안의 '$' 문자가 치환 패턴으로 해석되지 않게 함
+function injectSandbox(code) {
+  const headRe = /<head(\s[^>]*)?>/i;
+  if (headRe.test(code)) return code.replace(headRe, (m) => m + sandboxScript);
+  const htmlRe = /<html(\s[^>]*)?>/i;
+  if (htmlRe.test(code)) return code.replace(htmlRe, (m) => m + '<head>' + sandboxScript + '</head>');
+  const doctype = code.match(/^\s*<!doctype[^>]*>/i);
+  if (doctype) return doctype[0] + sandboxScript + code.slice(doctype[0].length);
+  return sandboxScript + code;
+}
+
 // Trigger Live Preview Rendering with Scroll Preservation
 function triggerRender() {
   state.renderCount++;
@@ -1263,7 +1350,11 @@ function triggerRender() {
     const j = state.models.js ? state.models.js.getValue() : '';
     const annotatedH = annotateHtmlWithLineNumbers(h);
     rawCode = combineComponentsToHtml(annotatedH, c, j);
+    // JS 탭 코드가 합쳐진 문서에서 몇 번째 줄부터 시작하는지 (오류 줄 번호 보정용)
+    const jsIdx = j ? rawCode.lastIndexOf(j) : -1;
+    state.previewJsStartLine = jsIdx >= 0 ? rawCode.slice(0, jsIdx).split('\n').length : 0;
   } else {
+    state.previewJsStartLine = 0;
     const singleCode = state.models.single ? state.models.single.getValue() : '';
     rawCode = annotateHtmlWithLineNumbers(singleCode);
   }
@@ -1271,14 +1362,7 @@ function triggerRender() {
   // Apply Loop Guards to scripts
   const codeWithGuards = injectLoopGuards(rawCode);
 
-  let injectedCode = codeWithGuards;
-  if (injectedCode.includes('<head>')) {
-    injectedCode = injectedCode.replace('<head>', '<head>' + sandboxScript);
-  } else if (injectedCode.includes('<html>')) {
-    injectedCode = injectedCode.replace('<html>', '<html><head>' + sandboxScript + '</head>');
-  } else {
-    injectedCode = sandboxScript + injectedCode;
-  }
+  const injectedCode = injectSandbox(codeWithGuards);
 
   // Preserve previous scroll position
   let scrollX = 0;
@@ -1348,123 +1432,190 @@ function highlightCodeInEditor(line, startCol, endCol) {
   }, 1800);
 }
 
+// ------------------------------------------------------------------
+// 프리뷰 요소 → 에디터 코드 위치 찾기
+// ------------------------------------------------------------------
+
+// <style>/<script> 블록과 HTML 주석의 범위 (요소 검색에서 제외할 영역)
+function getNonMarkupRanges(text) {
+  const ranges = [];
+  const re = /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>|<!--[\s\S]*?-->/gi;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    ranges.push([m.index, m.index + m[0].length]);
+  }
+  return ranges;
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 순수 함수: 소스 텍스트와 프리뷰가 보낸 요소 정보로 코드 위치를 계산한다.
+// 반환: { line, startCol, endCol, stale? } | { failed: 'stale' } | null
+function locateInSource(text, req) {
+  const ranges = getNonMarkupRanges(text);
+  const inSkipped = (off) => ranges.some((r) => off >= r[0] && off < r[1]);
+
+  const lineStarts = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) lineStarts.push(i + 1);
+  }
+  const totalLines = lineStarts.length;
+  const lineOf = (off) => {
+    let lo = 0;
+    let hi = totalLines - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= off) lo = mid; else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+  const toResult = (startOff, endOff, extra) => {
+    const ln = lineOf(startOff);
+    let lineEnd = ln < totalLines ? lineStarts[ln] - 1 : text.length;
+    if (lineEnd > 0 && text.charCodeAt(lineEnd - 1) === 13) lineEnd--;
+    const startCol = startOff - lineStarts[ln - 1] + 1;
+    const endCol = Math.max(startCol + 1, Math.min(endOff, lineEnd) - lineStarts[ln - 1] + 1);
+    return Object.assign({ line: ln, startCol, endCol }, extra || {});
+  };
+
+  const tag = (req.tagName || '').toLowerCase();
+  const locTag = (req.locTag || '').toLowerCase();
+  const hint = (req.line && req.line >= 1) ? req.line : null;
+
+  // 여는 태그 후보 수집 (from~to 범위, 마크업 영역만)
+  const collectTags = (name, from, to) => {
+    const re = new RegExp('<' + (name ? escapeRegExp(name) : '[a-zA-Z][\\w:-]*') + '(?=[\\s/>])', 'gi');
+    re.lastIndex = from;
+    const out = [];
+    let m;
+    while ((m = re.exec(text)) !== null && m.index < to) {
+      if (inSkipped(m.index)) continue;
+      const close = text.indexOf('>', m.index);
+      out.push({
+        index: m.index,
+        len: m[0].length,
+        head: text.slice(m.index, close === -1 ? m.index + 300 : close + 1)
+      });
+    }
+    return out;
+  };
+
+  const attrValue = (head, name) => {
+    const m = head.match(new RegExp('(?<![\\w-])' + name + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\')', 'i'));
+    return m ? (m[1] !== undefined ? m[1] : m[2]) : null;
+  };
+
+  // id 가 같으면 크게, class 토큰이 겹치면 조금씩 가산
+  const score = (cand) => {
+    let s = 0;
+    if (req.id && attrValue(cand.head, 'id') === req.id) s += 1000;
+    if (req.className) {
+      const have = (attrValue(cand.head, 'class') || '').trim().split(/\s+/);
+      req.className.trim().split(/\s+/).forEach((w) => {
+        if (w && have.includes(w)) s += 10;
+      });
+    }
+    return s;
+  };
+
+  // 1) 선택한 텍스트 — 마크업 영역 안에서만 검색, 줄 힌트가 있으면 가장 가까운 것
+  if (req.text) {
+    let best = null;
+    let from = 0;
+    for (;;) {
+      const idx = text.indexOf(req.text, from);
+      if (idx === -1) break;
+      if (!inSkipped(idx)) {
+        const dist = hint ? Math.abs(lineOf(idx) - hint) : 0;
+        if (!best || dist < best.dist) best = { idx, dist };
+        if (!hint) break;
+      }
+      from = idx + 1;
+    }
+    if (best) return toResult(best.idx, best.idx + req.text.length);
+  }
+
+  // 2) data-loc-line 으로 찾은 줄 — 그 줄에 실제로 해당 태그가 있는지 확인
+  let stale = false;
+  if (hint) {
+    const name = locTag || tag;
+    if (hint <= totalLines) {
+      const lineStart = lineStarts[hint - 1];
+      const lineEnd = hint < totalLines ? lineStarts[hint] : text.length + 1;
+      const onLine = collectTags(name, lineStart, lineEnd);
+      if (onLine.length) {
+        let pick = onLine[0];
+        for (const c of onLine) {
+          if (score(c) > score(pick)) pick = c;
+        }
+        return toResult(pick.index, pick.index + pick.len);
+      }
+    }
+    // 줄에 그 태그가 없다 = 코드를 고친 뒤 미리보기가 아직 갱신되지 않은 상태
+    stale = true;
+  }
+
+  // 3) id / class 로 여는 태그 검색 (줄 정보가 없거나 어긋났을 때)
+  //    조상에게서 줄을 물려받은 요소(JS로 만든 요소)는 같은 class 의 다른 정적 요소로 잘못 가지 않도록 제외
+  if ((req.id || req.className) && !(hint && req.exact === false)) {
+    let best = null;
+    for (const c of collectTags(tag, 0, text.length)) {
+      const sc = score(c);
+      if (sc <= 0) continue;
+      const dist = hint ? Math.abs(lineOf(c.index) - hint) : 0;
+      if (!best || sc > best.sc || (sc === best.sc && dist < best.dist)) best = { c, sc, dist };
+    }
+    if (best) return toResult(best.c.index, best.c.index + best.c.len, { stale });
+  }
+
+  // 줄 정보는 있었는데 대응되는 코드를 못 찾았다면, 엉뚱한 곳으로 보내지 않고 알려준다
+  if (stale) return { failed: 'stale' };
+
+  // 4) 마지막 수단: 요소 안 글자 일부
+  const firstLine = (req.innerText || '').split('\n').map((t) => t.trim()).find((t) => t.length > 0) || '';
+  const snippet = firstLine.slice(0, 30);
+  if (snippet.length >= 3) {
+    let from = 0;
+    for (;;) {
+      const idx = text.indexOf(snippet, from);
+      if (idx === -1) break;
+      if (!inSkipped(idx)) return toResult(idx, idx + snippet.length);
+      from = idx + 1;
+    }
+  }
+  return null;
+}
+
 // Locate and Highlight Code in Monaco from Live Preview Drag / Click
 function handleLocateCodeFromPreview(data) {
-  const { line, text, tagName, id, className, innerText } = data;
+  const { text, tagName } = data;
   if (!state.editor) return;
 
   // Determine target tab and model
-  let targetTab = 'html';
-  let targetModel = state.mode === 'tabs' ? state.models.html : state.models.single;
-
+  const targetTab = 'html';
+  const targetModel = state.mode === 'tabs' ? state.models.html : state.models.single;
   if (!targetModel) return;
 
-  let targetLine = null;
-  let targetColStart = 1;
-  let targetColEnd = 1;
+  const found = locateInSource(targetModel.getValue(), data);
 
-  const totalLines = targetModel.getLineCount();
-
-  // Strategy 1: data-loc-line provided
-  if (line && line >= 1 && line <= totalLines) {
-    const lineContent = targetModel.getLineContent(line);
-
-    if (text && lineContent.includes(text)) {
-      targetLine = line;
-      targetColStart = lineContent.indexOf(text) + 1;
-      targetColEnd = targetColStart + text.length;
-    } else if (text) {
-      const matches = targetModel.findMatches(text, false, false, true, null, true);
-      if (matches && matches.length > 0) {
-        let bestMatch = matches[0];
-        let minDiff = Math.abs(matches[0].range.startLineNumber - line);
-        for (let i = 1; i < matches.length; i++) {
-          const diff = Math.abs(matches[i].range.startLineNumber - line);
-          if (diff < minDiff) {
-            minDiff = diff;
-            bestMatch = matches[i];
-          }
-        }
-        targetLine = bestMatch.range.startLineNumber;
-        targetColStart = bestMatch.range.startColumn;
-        targetColEnd = bestMatch.range.endColumn;
-      }
-    }
-
-    if (!targetLine) {
-      targetLine = line;
-      if (tagName) {
-        const tagPattern = new RegExp('<' + tagName + '\\b', 'i');
-        const match = lineContent.match(tagPattern);
-        if (match) {
-          targetColStart = match.index + 1;
-          targetColEnd = targetColStart + match[0].length;
-        } else {
-          targetColStart = Math.max(1, lineContent.search(/\S/) + 1);
-          targetColEnd = lineContent.length + 1;
-        }
-      } else {
-        targetColStart = Math.max(1, lineContent.search(/\S/) + 1);
-        targetColEnd = lineContent.length + 1;
-      }
-    }
-  } else if (text) {
-    // Strategy 2: Text search across model
-    const matches = targetModel.findMatches(text, false, false, true, null, true);
-    if (matches && matches.length > 0) {
-      targetLine = matches[0].range.startLineNumber;
-      targetColStart = matches[0].range.startColumn;
-      targetColEnd = matches[0].range.endColumn;
-    }
+  if (found && found.failed === 'stale') {
+    showToast('코드가 수정되어 미리보기와 위치가 어긋났습니다. Ctrl+Enter로 새로고침 후 다시 시도하세요.', 'warning');
+    return;
   }
-
-  // Strategy 3: ID search
-  if (!targetLine && id) {
-    const idMatches = targetModel.findMatches(`id="${id}"`, false, false, true, null, true)
-      || targetModel.findMatches(`id='${id}'`, false, false, true, null, true);
-    if (idMatches && idMatches.length > 0) {
-      targetLine = idMatches[0].range.startLineNumber;
-      targetColStart = idMatches[0].range.startColumn;
-      targetColEnd = idMatches[0].range.endColumn;
-    }
-  }
-
-  // Strategy 4: Class search
-  if (!targetLine && className) {
-    const firstClass = className.trim().split(/\s+/)[0];
-    if (firstClass) {
-      const classMatches = targetModel.findMatches(firstClass, false, false, true, null, true);
-      if (classMatches && classMatches.length > 0) {
-        targetLine = classMatches[0].range.startLineNumber;
-        targetColStart = classMatches[0].range.startColumn;
-        targetColEnd = classMatches[0].range.endColumn;
-      }
-    }
-  }
-
-  // Strategy 5: InnerText search snippet
-  if (!targetLine && innerText && innerText.trim().length > 2) {
-    const cleanSnippet = innerText.trim().slice(0, 30);
-    const snippetMatches = targetModel.findMatches(cleanSnippet, false, false, true, null, true);
-    if (snippetMatches && snippetMatches.length > 0) {
-      targetLine = snippetMatches[0].range.startLineNumber;
-      targetColStart = snippetMatches[0].range.startColumn;
-      targetColEnd = snippetMatches[0].range.endColumn;
-    }
-  }
-
-  if (!targetLine) {
+  if (!found) {
     showToast('해당 요소의 코드를 에디터에서 찾을 수 없습니다.', 'warning');
     return;
   }
 
+  const targetLine = found.line;
+  const targetColStart = found.startCol;
+  const targetColEnd = found.endCol;
+
   // Switch tab if needed
   if (state.mode === 'tabs' && state.currentTab !== targetTab) {
     switchTab(targetTab);
-  }
-
-  if (targetColEnd <= targetColStart) {
-    targetColEnd = targetColStart + 1;
   }
 
   const scrollType = (window.monaco && monaco.editor && monaco.editor.ScrollType) ? monaco.editor.ScrollType.Smooth : undefined;
@@ -1480,10 +1631,29 @@ function handleLocateCodeFromPreview(data) {
   showToast(`🎯 코드 발견: ${label} (줄 ${targetLine})`, 'info');
 }
 
+// 미리보기 문서의 오류 줄을 에디터의 실제 줄 번호로 바꿔 문자열로 반환
+function describeErrorLocation(line, col) {
+  const docLine = line - SANDBOX_LINE_COUNT; // 샌드박스가 밀어낸 줄 수 제거
+  const colStr = col ? ':' + col : '';
+  if (state.mode === 'tabs') {
+    const jsLines = state.models.js ? state.models.js.getLineCount() : 0;
+    const rel = docLine - state.previewJsStartLine + 1;
+    if (state.previewJsStartLine > 0 && rel >= 1 && rel <= jsLines) {
+      return `(JS 탭 ${rel}줄${colStr})`;
+    }
+    return docLine >= 1 ? `(미리보기 문서 ${docLine}줄${colStr})` : '';
+  }
+  return docLine >= 1 ? `(줄 ${docLine}${colStr})` : '';
+}
+
 // Receive Messages from Preview Frame
 window.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'CONSOLE_LOG') {
-    addConsoleEntry(event.data.level, event.data.message, event.data.time);
+    let message = event.data.message;
+    if (event.data.errorLine) {
+      message += ' ' + describeErrorLocation(event.data.errorLine, event.data.errorCol);
+    }
+    addConsoleEntry(event.data.level, message, event.data.time);
   } else if (event.data && event.data.type === 'LOCATE_CODE_FROM_PREVIEW') {
     handleLocateCodeFromPreview(event.data);
   }
@@ -1714,24 +1884,41 @@ window.addEventListener('dragleave', (e) => {
   }
 });
 
-window.addEventListener('drop', (e) => {
+// 드롭한 파일 읽기: UTF-8 우선, 아니면 EUC-KR(CP949)로 해석 (한글 깨짐 방지)
+async function readDroppedFileAsText(file) {
+  const buf = await file.arrayBuffer();
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf);
+  } catch (e) {
+    return new TextDecoder('euc-kr').decode(buf);
+  }
+}
+
+window.addEventListener('drop', async (e) => {
   e.preventDefault();
   elements.dropOverlay.classList.remove('active');
 
   const files = e.dataTransfer.files;
   if (files.length > 0) {
     const file = files[0];
-    const reader = new FileReader();
-    reader.onload = (re) => {
-      setFullCode(re.target.result);
+    try {
+      const content = await readDroppedFileAsText(file);
+      setFullCode(content);
       state.currentFilename = file.name;
+      // 드롭한 파일의 실제 경로는 알 수 없다. 이전에 열었던 파일 경로가 남아 있으면
+      // Ctrl+S 가 엉뚱한 파일을 덮어쓰므로 경로를 비워 '다른 이름으로 저장'으로 유도한다.
+      state.currentFilepath = null;
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.reset_filepath) {
+        try { await window.pywebview.api.reset_filepath(); } catch (err) {}
+      }
       state.isDirty = false;
       elements.currentFilename.textContent = file.name;
       elements.dirtyIndicator.style.display = 'none';
-      elements.statusPath.textContent = file.name;
+      elements.statusPath.textContent = file.name + ' (저장 시 위치 선택)';
       showToast(`'${file.name}' 파일을 불러왔습니다.`);
-    };
-    reader.readAsText(file);
+    } catch (err) {
+      showToast('파일을 읽지 못했습니다: ' + (err.message || err), 'error');
+    }
   }
 });
 
@@ -1937,7 +2124,7 @@ async function checkSoftwareUpdates(isUserInitiated = false) {
       renderUpdateStatus({
         success: true,
         has_update: false,
-        current_version: '1.1.0',
+        current_version: '1.1.1',
         message: '웹 브라우저 모드입니다. GitHub에서 최신 버전을 확인할 수 있습니다.'
       });
     }
@@ -1996,7 +2183,7 @@ function renderUpdateStatus(info) {
       <div class="version-comparison">
         <div class="version-box">
           <span class="version-label">현재 버전</span>
-          <span class="version-value">v${escapeHtml(info.current_version || '1.1.0')}</span>
+          <span class="version-value">v${escapeHtml(info.current_version || '1.1.1')}</span>
         </div>
         <i class="fa-solid fa-arrow-right-long version-arrow"></i>
         <div class="version-box">
@@ -2078,7 +2265,7 @@ function renderUpdateStatus(info) {
         <i class="fa-solid fa-circle-check text-green" style="font-size: 42px; color: #10b981; margin-bottom: 14px;"></i>
         <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">최신 버전을 사용 중입니다</h3>
         <p style="margin: 0 0 14px 0; font-size: 13px; color: var(--text-secondary);">
-          현재 설치 버전: <strong style="color: #38bdf8; font-family: var(--font-mono);">v${escapeHtml(info.current_version || '1.1.0')}</strong>
+          현재 설치 버전: <strong style="color: #38bdf8; font-family: var(--font-mono);">v${escapeHtml(info.current_version || '1.1.1')}</strong>
         </p>
         <p style="margin: 0; font-size: 11px; color: var(--text-muted); line-height: 1.5;">
           ${escapeHtml(info.message || '현재 버전이 가장 최신입니다.')}<br>
