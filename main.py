@@ -10,7 +10,7 @@ import subprocess
 import webbrowser
 import webview
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 GITHUB_REPO = "12Cchris/html-live-studio"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 

@@ -1,8 +1,8 @@
-﻿; Inno Setup Script for HTML Live Studio
+; Inno Setup Script for HTML Live Studio
 ; Ultra-compressed single setup installer
 
 #define MyAppName "HTML Live Studio"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "HTML Live Studio"
 #define MyAppURL "https://github.com"
 #define MyAppExeName "HTML Live Studio.exe"

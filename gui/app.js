@@ -1158,14 +1158,23 @@ const sandboxScript = `
       return getElementLocation(el).line;
     }
 
-    // 드래그로 텍스트를 선택했을 때, 마우스를 놓은 위치가 아니라 '선택이 시작된 요소'를 기준으로 삼는다
-    function getSelectionStartElement() {
+    // 드래그로 텍스트나 영역을 선택했을 때, 해당 요소 또는 공통 상위 컨테이너를 추출
+    function getSelectionTargetElement() {
       try {
         var sel = window.getSelection ? window.getSelection() : null;
         if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
-        var node = sel.getRangeAt(0).startContainer;
-        if (node && node.nodeType === 3) node = node.parentElement;
-        return (node && node.nodeType === 1) ? node : null;
+        var range = sel.getRangeAt(0);
+        var ancestor = range.commonAncestorContainer;
+        if (ancestor && ancestor.nodeType === 3) ancestor = ancestor.parentElement;
+        var startNode = range.startContainer;
+        if (startNode && startNode.nodeType === 3) startNode = startNode.parentElement;
+        var endNode = range.endContainer;
+        if (endNode && endNode.nodeType === 3) endNode = endNode.parentElement;
+
+        if (startNode !== endNode && ancestor && ancestor.nodeType === 1 && ancestor !== document.body && ancestor !== document.documentElement) {
+          return ancestor;
+        }
+        return (startNode && startNode.nodeType === 1) ? startNode : (ancestor || null);
       } catch (e) {
         return null;
       }
@@ -1173,7 +1182,7 @@ const sandboxScript = `
 
     function resolveTarget(fallbackTarget, selectedText) {
       if (selectedText) {
-        var selEl = getSelectionStartElement();
+        var selEl = getSelectionTargetElement();
         if (selEl) return selEl;
       }
       return fallbackTarget;
@@ -1401,12 +1410,13 @@ function triggerRender() {
 let activeEditorDecorations = [];
 let decorationTimeout = null;
 
-function highlightCodeInEditor(line, startCol, endCol) {
+function highlightCodeInEditor(startLine, startCol, endLine, endCol) {
   if (!state.editor) return;
   if (decorationTimeout) clearTimeout(decorationTimeout);
 
-  const range = new monaco.Range(line, startCol, line, endCol);
-  const lineRange = new monaco.Range(line, 1, line, 1);
+  endLine = endLine || startLine;
+  const range = new monaco.Range(startLine, startCol, endLine, endCol);
+  const lineRange = new monaco.Range(startLine, 1, endLine, 1);
 
   activeEditorDecorations = state.editor.deltaDecorations(activeEditorDecorations, [
     {
@@ -1451,8 +1461,97 @@ function escapeRegExp(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// 주어진 여는 태그 위치(tagStart)에서 태그 닫힘 및 매칭되는 닫는 태그를 찾아 요소 전체 코드 범위를 구한다.
+function getElementCodeRange(text, tagStart, tagName, inSkipped) {
+  const name = (tagName || '').toLowerCase();
+  
+  // 1. 여는 태그의 끝 ('>') 찾기 (따옴표 내부 무시)
+  let openTagEnd = -1;
+  let inQuote = null;
+  for (let i = tagStart; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuote) {
+      if (ch === inQuote) inQuote = null;
+    } else {
+      if (ch === '"' || ch === "'") {
+        inQuote = ch;
+      } else if (ch === '>') {
+        openTagEnd = i + 1;
+        break;
+      }
+    }
+  }
+  if (openTagEnd === -1) {
+    return { start: tagStart, end: tagStart + (name.length + 1) };
+  }
+
+  // 2. void 태그이거나 스스로 닫힌 태그(/>)인 경우
+  const VOID_TAGS = new Set([
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+    'link', 'meta', 'param', 'source', 'track', 'wbr'
+  ]);
+  const tagHead = text.slice(tagStart, openTagEnd);
+  if (VOID_TAGS.has(name) || tagHead.trim().endsWith('/>')) {
+    return { start: tagStart, end: openTagEnd };
+  }
+
+  // 3. 닫는 태그 찾기 (중첩 태그 depth 추적)
+  let depth = 0;
+  const tagRegex = new RegExp('<(/?)\\s*' + escapeRegExp(name) + '([\\s/>]|$)', 'gi');
+  tagRegex.lastIndex = openTagEnd;
+  let m;
+  let matchedEnd = -1;
+
+  while ((m = tagRegex.exec(text)) !== null) {
+    if (inSkipped && inSkipped(m.index)) continue;
+    const isClose = m[1] === '/';
+    let closeEnd = -1;
+    let quote = null;
+    for (let j = m.index; j < text.length; j++) {
+      const c = text[j];
+      if (quote) {
+        if (c === quote) quote = null;
+      } else {
+        if (c === '"' || c === "'") quote = c;
+        else if (c === '>') {
+          closeEnd = j + 1;
+          break;
+        }
+      }
+    }
+    if (closeEnd === -1) break;
+
+    if (isClose) {
+      if (depth === 0) {
+        matchedEnd = closeEnd;
+        break;
+      } else {
+        depth--;
+      }
+    } else {
+      const innerHead = text.slice(m.index, closeEnd);
+      if (!innerHead.trim().endsWith('/>')) {
+        depth++;
+      }
+    }
+    tagRegex.lastIndex = closeEnd;
+  }
+
+  if (matchedEnd !== -1) {
+    // 요소 전체 줄 수가 60줄 이하이면 요소 전체 코드를 선택, 초과 시 여는 태그만 선택하여 가독성 유지
+    const lineCount = (text.slice(tagStart, matchedEnd).match(/\n/g) || []).length;
+    if (lineCount <= 60) {
+      return { start: tagStart, end: matchedEnd };
+    } else {
+      return { start: tagStart, end: openTagEnd };
+    }
+  }
+
+  return { start: tagStart, end: openTagEnd };
+}
+
 // 순수 함수: 소스 텍스트와 프리뷰가 보낸 요소 정보로 코드 위치를 계산한다.
-// 반환: { line, startCol, endCol, stale? } | { failed: 'stale' } | null
+// 반환: { line, startLine, startCol, endLine, endCol, stale? } | { failed: 'stale' } | null
 function locateInSource(text, req) {
   const ranges = getNonMarkupRanges(text);
   const inSkipped = (off) => ranges.some((r) => off >= r[0] && off < r[1]);
@@ -1471,13 +1570,19 @@ function locateInSource(text, req) {
     }
     return lo + 1;
   };
+
   const toResult = (startOff, endOff, extra) => {
-    const ln = lineOf(startOff);
-    let lineEnd = ln < totalLines ? lineStarts[ln] - 1 : text.length;
-    if (lineEnd > 0 && text.charCodeAt(lineEnd - 1) === 13) lineEnd--;
-    const startCol = startOff - lineStarts[ln - 1] + 1;
-    const endCol = Math.max(startCol + 1, Math.min(endOff, lineEnd) - lineStarts[ln - 1] + 1);
-    return Object.assign({ line: ln, startCol, endCol }, extra || {});
+    const startLine = lineOf(startOff);
+    const endLine = lineOf(endOff);
+    const startCol = startOff - lineStarts[startLine - 1] + 1;
+    const endCol = endOff - lineStarts[endLine - 1] + 1;
+    return Object.assign({
+      line: startLine,
+      startLine,
+      startCol,
+      endLine,
+      endCol: Math.max(startLine === endLine ? startCol + 1 : 1, endCol)
+    }, extra || {});
   };
 
   const tag = (req.tagName || '').toLowerCase();
@@ -1496,6 +1601,7 @@ function locateInSource(text, req) {
       out.push({
         index: m.index,
         len: m[0].length,
+        name: m[0].slice(1).toLowerCase(),
         head: text.slice(m.index, close === -1 ? m.index + 300 : close + 1)
       });
     }
@@ -1507,90 +1613,114 @@ function locateInSource(text, req) {
     return m ? (m[1] !== undefined ? m[1] : m[2]) : null;
   };
 
-  // id 가 같으면 크게, class 토큰이 겹치면 조금씩 가산
+  // id 가 같으면 크게, class 토큰이 겹치면 가산, 본문/선택 텍스트 일치 시 가산
   const score = (cand) => {
     let s = 0;
     if (req.id && attrValue(cand.head, 'id') === req.id) s += 1000;
     if (req.className) {
       const have = (attrValue(cand.head, 'class') || '').trim().split(/\s+/);
       req.className.trim().split(/\s+/).forEach((w) => {
-        if (w && have.includes(w)) s += 10;
+        if (w && have.includes(w)) s += 20;
       });
+    }
+    const searchText = (req.text || req.innerText || '').trim();
+    if (searchText && searchText.length >= 2) {
+      const snippet = text.slice(cand.index, cand.index + 300);
+      if (snippet.includes(searchText)) s += 100;
     }
     return s;
   };
 
-  // 1) 선택한 텍스트 — 마크업 영역 안에서만 검색, 줄 힌트가 있으면 가장 가까운 것
-  if (req.text) {
-    let best = null;
-    let from = 0;
-    for (;;) {
-      const idx = text.indexOf(req.text, from);
-      if (idx === -1) break;
-      if (!inSkipped(idx)) {
-        const dist = hint ? Math.abs(lineOf(idx) - hint) : 0;
-        if (!best || dist < best.dist) best = { idx, dist };
-        if (!hint) break;
-      }
-      from = idx + 1;
-    }
-    if (best) return toResult(best.idx, best.idx + req.text.length);
-  }
-
-  // 2) data-loc-line 으로 찾은 줄 — 그 줄에 실제로 해당 태그가 있는지 확인
+  // 1) data-loc-line 으로 찾은 줄 — 그 줄에 실제로 해당 태그가 있는지 확인
   let stale = false;
   if (hint) {
-    const name = locTag || tag;
+    const targetTagName = locTag || tag;
     if (hint <= totalLines) {
       const lineStart = lineStarts[hint - 1];
       const lineEnd = hint < totalLines ? lineStarts[hint] : text.length + 1;
-      const onLine = collectTags(name, lineStart, lineEnd);
+      let onLine = collectTags(targetTagName, lineStart, lineEnd);
+      if (!onLine.length && tag && tag !== targetTagName) {
+        onLine = collectTags(tag, lineStart, lineEnd);
+      }
+      if (!onLine.length) {
+        onLine = collectTags('', lineStart, lineEnd);
+      }
       if (onLine.length) {
         let pick = onLine[0];
         for (const c of onLine) {
           if (score(c) > score(pick)) pick = c;
         }
-        return toResult(pick.index, pick.index + pick.len);
+        const range = getElementCodeRange(text, pick.index, pick.name || targetTagName, inSkipped);
+        return toResult(range.start, range.end);
       }
     }
-    // 줄에 그 태그가 없다 = 코드를 고친 뒤 미리보기가 아직 갱신되지 않은 상태
     stale = true;
   }
 
-  // 3) id / class 로 여는 태그 검색 (줄 정보가 없거나 어긋났을 때)
-  //    조상에게서 줄을 물려받은 요소(JS로 만든 요소)는 같은 class 의 다른 정적 요소로 잘못 가지 않도록 제외
-  if ((req.id || req.className) && !(hint && req.exact === false)) {
+  // 2) 줄 정보가 없거나 어긋났을 때: id / class / tagName 으로 문서 전체 검색
+  if ((req.id || req.className || tag) && !(hint && req.exact === false)) {
     let best = null;
-    for (const c of collectTags(tag, 0, text.length)) {
+    const candidates = collectTags(tag || locTag, 0, text.length);
+    for (const c of candidates) {
       const sc = score(c);
-      if (sc <= 0) continue;
+      if (sc <= 0 && !tag) continue;
       const dist = hint ? Math.abs(lineOf(c.index) - hint) : 0;
-      if (!best || sc > best.sc || (sc === best.sc && dist < best.dist)) best = { c, sc, dist };
+      if (!best || sc > best.sc || (sc === best.sc && dist < best.dist)) {
+        best = { c, sc, dist };
+      }
     }
-    if (best) return toResult(best.c.index, best.c.index + best.c.len, { stale });
+    if (best) {
+      const range = getElementCodeRange(text, best.c.index, best.c.name || tag, inSkipped);
+      return toResult(range.start, range.end, { stale });
+    }
   }
 
-  // 줄 정보는 있었는데 대응되는 코드를 못 찾았다면, 엉뚱한 곳으로 보내지 않고 알려준다
   if (stale) return { failed: 'stale' };
 
-  // 4) 마지막 수단: 요소 안 글자 일부
-  const firstLine = (req.innerText || '').split('\n').map((t) => t.trim()).find((t) => t.length > 0) || '';
-  const snippet = firstLine.slice(0, 30);
-  if (snippet.length >= 3) {
+  // 3) 최후의 수단: 텍스트로 검색하되, 해당 텍스트를 감싸고 있는 요소 코드를 찾아 선택
+  const queryText = (req.text || req.innerText || '').trim();
+  if (queryText && queryText.length >= 2) {
+    let bestIdx = -1;
+    let bestDist = Infinity;
     let from = 0;
-    for (;;) {
-      const idx = text.indexOf(snippet, from);
+    while (true) {
+      const idx = text.indexOf(queryText, from);
       if (idx === -1) break;
-      if (!inSkipped(idx)) return toResult(idx, idx + snippet.length);
+      if (!inSkipped(idx)) {
+        const dist = hint ? Math.abs(lineOf(idx) - hint) : 0;
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestIdx = idx;
+        }
+        if (!hint) break;
+      }
       from = idx + 1;
     }
+
+    if (bestIdx !== -1) {
+      // 텍스트 앞쪽에서 가장 가까운 여는 태그 찾기
+      const precedingText = text.slice(Math.max(0, bestIdx - 500), bestIdx);
+      const tagMatch = precedingText.match(/<([a-zA-Z][\w:-]*)(?=[^<]*$)/);
+      if (tagMatch) {
+        const tagStart = bestIdx - (precedingText.length - tagMatch.index);
+        const enclosingTag = tagMatch[1].toLowerCase();
+        if (!['html', 'body', 'head'].includes(enclosingTag)) {
+          const range = getElementCodeRange(text, tagStart, enclosingTag, inSkipped);
+          if (bestIdx >= range.start && bestIdx < range.end) {
+            return toResult(range.start, range.end);
+          }
+        }
+      }
+      return toResult(bestIdx, bestIdx + queryText.length);
+    }
   }
+
   return null;
 }
 
 // Locate and Highlight Code in Monaco from Live Preview Drag / Click
 function handleLocateCodeFromPreview(data) {
-  const { text, tagName } = data;
+  const { tagName } = data;
   if (!state.editor) return;
 
   // Determine target tab and model
@@ -1609,9 +1739,10 @@ function handleLocateCodeFromPreview(data) {
     return;
   }
 
-  const targetLine = found.line;
-  const targetColStart = found.startCol;
-  const targetColEnd = found.endCol;
+  const startLine = found.startLine || found.line;
+  const startCol = found.startCol;
+  const endLine = found.endLine || found.line;
+  const endCol = found.endCol;
 
   // Switch tab if needed
   if (state.mode === 'tabs' && state.currentTab !== targetTab) {
@@ -1619,16 +1750,19 @@ function handleLocateCodeFromPreview(data) {
   }
 
   const scrollType = (window.monaco && monaco.editor && monaco.editor.ScrollType) ? monaco.editor.ScrollType.Smooth : undefined;
-  state.editor.revealLineInCenter(targetLine, scrollType);
-  state.editor.setSelection(new monaco.Range(targetLine, targetColStart, targetLine, targetColEnd));
+  state.editor.revealLineInCenter(startLine, scrollType);
+  state.editor.setSelection(new monaco.Range(startLine, startCol, endLine, endCol));
   state.editor.focus();
 
-  highlightCodeInEditor(targetLine, targetColStart, targetColEnd);
+  highlightCodeInEditor(startLine, startCol, endLine, endCol);
 
-  const tagLabel = tagName ? `<${tagName}>` : '요소';
-  const label = text ? `"${text.length > 20 ? text.slice(0, 20) + '...' : text}"` : tagLabel;
-  setStatus(`🎯 코드 탐색: ${label} (줄 ${targetLine})`);
-  showToast(`🎯 코드 발견: ${label} (줄 ${targetLine})`, 'info');
+  const finalTag = tagName || data.locTag;
+  const idStr = data.id ? ('#' + data.id) : '';
+  const classStr = data.className ? ('.' + data.className.trim().split(/\s+/)[0]) : '';
+  const tagDisplay = finalTag ? `<${finalTag}${idStr}${classStr}>` : '요소 코드';
+  const lineDisplay = startLine === endLine ? `줄 ${startLine}` : `줄 ${startLine}~${endLine}`;
+  setStatus(`🎯 코드 탐색: ${tagDisplay} (${lineDisplay})`);
+  showToast(`🎯 코드 발견: ${tagDisplay} (${lineDisplay})`, 'info');
 }
 
 // 미리보기 문서의 오류 줄을 에디터의 실제 줄 번호로 바꿔 문자열로 반환
@@ -2124,7 +2258,7 @@ async function checkSoftwareUpdates(isUserInitiated = false) {
       renderUpdateStatus({
         success: true,
         has_update: false,
-        current_version: '1.1.1',
+        current_version: '1.1.2',
         message: '웹 브라우저 모드입니다. GitHub에서 최신 버전을 확인할 수 있습니다.'
       });
     }
@@ -2183,7 +2317,7 @@ function renderUpdateStatus(info) {
       <div class="version-comparison">
         <div class="version-box">
           <span class="version-label">현재 버전</span>
-          <span class="version-value">v${escapeHtml(info.current_version || '1.1.1')}</span>
+          <span class="version-value">v${escapeHtml(info.current_version || '1.1.2')}</span>
         </div>
         <i class="fa-solid fa-arrow-right-long version-arrow"></i>
         <div class="version-box">
@@ -2265,7 +2399,7 @@ function renderUpdateStatus(info) {
         <i class="fa-solid fa-circle-check text-green" style="font-size: 42px; color: #10b981; margin-bottom: 14px;"></i>
         <h3 style="margin: 0 0 8px 0; font-size: 16px; color: var(--text-primary);">최신 버전을 사용 중입니다</h3>
         <p style="margin: 0 0 14px 0; font-size: 13px; color: var(--text-secondary);">
-          현재 설치 버전: <strong style="color: #38bdf8; font-family: var(--font-mono);">v${escapeHtml(info.current_version || '1.1.1')}</strong>
+          현재 설치 버전: <strong style="color: #38bdf8; font-family: var(--font-mono);">v${escapeHtml(info.current_version || '1.1.2')}</strong>
         </p>
         <p style="margin: 0; font-size: 11px; color: var(--text-muted); line-height: 1.5;">
           ${escapeHtml(info.message || '현재 버전이 가장 최신입니다.')}<br>
