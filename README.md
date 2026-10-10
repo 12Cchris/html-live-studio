@@ -3,6 +3,11 @@
 <div align="center">
   <img src="gui/app_icon.png" width="120" height="120" alt="HTML Live Studio Logo" />
   <p><strong>브라우저 엔진(Edge WebView2)과 Monaco Editor를 탑재한 초경량 데스크톱 실시간 HTML/CSS/JS 편집기</strong></p>
+  <p>
+    <a href="https://github.com/12Cchris/html-live-studio/releases/latest"><img src="https://img.shields.io/github/v/release/12Cchris/html-live-studio?color=blue&label=Latest%20Release" alt="Latest Release" /></a>
+    <img src="https://img.shields.io/badge/version-v1.1.2-brightgreen" alt="Version 1.1.2" />
+    <img src="https://img.shields.io/badge/license-GPLv3-blue" alt="License" />
+  </p>
 </div>
 
 ---
@@ -16,7 +21,7 @@
 - 📂 **네이티브 파일 입출력 & 드래그 앤 드롭**: 새 파일, 열기, 저장, 다른 이름으로 저장, 파일 끌어다 놓기 지원
 - 🐞 **내장 개발자 콘솔**: 미리보기 페이지의 `console.log`, `console.error` 실시간 모니터링
 - 🎨 **프리셋 템플릿 내장**: HTML5 기본, 글래스모피즘 카드, 인터랙티브 캔버스 파티클, Todo 앱, 3D 큐브
-- 🎯 **라이브 프리뷰 요소 코드 자동 탐색 (Drag-to-Code / Inspector)**: 라이브 프리뷰 화면의 요소나 텍스트를 마우스로 드래그하면 에디터의 해당 코드 위치로 즉시 스크롤 이동 및 강조 표시 (상단 탐색기 버튼 또는 Alt+클릭 지원)
+- 🎯 **라이브 프리뷰 요소 코드 자동 탐색 (Drag-to-Code / Inspector)**: 라이브 프리뷰 화면에서 원하는 요소나 텍스트를 마우스로 드래그하면 에디터의 해당 HTML 요소 코드 전체 블록으로 즉시 스크롤 이동 및 강조 표시 (상단 탐색기 버튼 또는 Alt+클릭 지원)
 - 💾 **자동 복구 (Auto-Save)**: 프로그램 재실행 시 작업 중이던 코드가 안전하게 복원
 
 ---
@@ -24,7 +29,10 @@
 ## 📥 다운로드 및 실행
 
 ### 방법 1. 무설치 단일 실행 파일 (`.exe`) - 추천
-[**GitHub Releases**](https://github.com/12Cchris/html-live-studio/releases) 탭에서 `HTML Live Studio.exe`를 다운로드하여 더블 클릭하면 파이썬 설치 없이 바로 실행됩니다.
+[**최신 릴리즈 (GitHub Releases Latest)**](https://github.com/12Cchris/html-live-studio/releases/latest) 페이지에서 최신 버전의 `HTML.Live.Studio.exe`를 다운로드하여 더블 클릭하면 파이썬 설치 없이 바로 실행됩니다.
+
+- 🔗 **최신 릴리즈 페이지**: [GitHub Releases (Latest)](https://github.com/12Cchris/html-live-studio/releases/latest)
+- 📦 **전체 릴리즈 목록**: [모든 버전 보기](https://github.com/12Cchris/html-live-studio/releases)
 
 ### 방법 2. 소스 코드로 직접 실행 (Python)
 ```bash
